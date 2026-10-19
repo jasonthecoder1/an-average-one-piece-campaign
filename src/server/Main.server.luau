@@ -1,7 +1,12 @@
--- Server entry (step 3): everyone in the server is one crew and sails the sea chart.
+-- Server entry (step 4): everyone in the server is one crew. They walk the ship, craft, then sail the sea chart.
 -- (Step 5 replaces the auto crew with the lobby menu.)
 local Players = game:GetService("Players")
 local Run = require(script.Parent.Run)
+local ShipService = require(script.Parent.ShipService)
+
+ShipService.build()
+Run.onShip = ShipService.board
+Run.onChanged = ShipService.push
 
 local CLASSES = { "Warrior", "Assassin" }
 local ROLES = { "Captain", "Navigator", "Cook", "Doctor", "Musician", "Archaeologist" }

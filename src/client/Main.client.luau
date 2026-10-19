@@ -4,11 +4,37 @@ local Players = game:GetService("Players")
 local Kit = require(script.Parent.Kit)
 local BattleUI = require(script.Parent.BattleUI)
 local MapUI = require(script.Parent.MapUI)
+local ShipUI = require(script.Parent.ShipUI)
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local function blocked()
+	return BattleUI.active()
+end
+
 BattleUI.init()
-MapUI.blocked = BattleUI.active
+MapUI.blocked = blocked
+ShipUI.blocked = blocked
+ShipUI.openChart = MapUI.open
 MapUI.init()
+ShipUI.init()
+
+-- hide the ship HUDs while a fight (or another full screen) is up
+task.spawn(function()
+	local last = nil
+	while true do
+		local b = blocked()
+		if b ~= last then
+			last = b
+			MapUI.setHudVisible(not b)
+			ShipUI.setHudVisible(not b)
+			if b then
+				MapUI.close()
+			end
+		end
+		task.wait(0.25)
+	end
+end)
 
 -- toasts: a short message panel at the top of the screen
 local toastGui = Kit.screen("Toasts", 50, Players.LocalPlayer:WaitForChild("PlayerGui"))

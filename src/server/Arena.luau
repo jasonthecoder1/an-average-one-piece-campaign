@@ -56,7 +56,7 @@ function Arena.build()
 	-- sand clearing + grass rim
 	part({ Name = "Ground", Size = Vector3.new(90, 2, 80), Position = C - Vector3.new(0, 1, 0), Color = Color3.fromRGB(226, 200, 140), Material = Enum.Material.Sand, Parent = folder })
 	part({ Name = "Grass", Size = Vector3.new(130, 1.6, 120), Position = C - Vector3.new(0, 1.6, 0), Color = Color3.fromRGB(90, 160, 70), Material = Enum.Material.Grass, Parent = folder })
-	part({ Name = "Sea", Size = Vector3.new(600, 1, 600), Position = C - Vector3.new(0, 3, 0), Color = Color3.fromRGB(40, 120, 190), Material = Enum.Material.Glass, Transparency = 0.15, CanCollide = false, Parent = folder })
+	part({ Name = "Sea", Size = Vector3.new(600, 1, 600), Position = C - Vector3.new(0, 3.3, 0), Color = Color3.fromRGB(40, 120, 190), Material = Enum.Material.Glass, Transparency = 0.15, CanCollide = false, Parent = folder })
 
 	local rng = Random.new(42)
 	-- palm trees around the edge (chunky, readable from far away)

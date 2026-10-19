@@ -16,6 +16,7 @@ local CrewDefs = require(Shared.CrewDefs)
 local ActionCommandDefs = require(Shared.ActionCommandDefs)
 local Remotes = require(script.Parent.Remotes)
 local Arena = require(script.Parent.Arena)
+local ItemDefs = require(Shared.ItemDefs)
 
 local BattleService = {}
 
@@ -580,8 +581,9 @@ local function makeCrewUnit(battle, member, slot)
 	local race = CrewDefs.find(CrewDefs.Races, member.race)
 	local rm = race and race.mods or {}
 	local power = 1 + 0.15 * (battle.power or 0) -- huge power-up after every sea boss
-	local maxHp = math.floor(kit.class.hp * kit.mods.hpMult * (rm.hpMult or 1) * power + 0.5)
-	local dmgMult = (rm.dmgMult or 1) * (if member.haki == "Armament" then 1.1 else 1) * power
+	local gear = ItemDefs.gearBonus(member) -- armor HP + class-weapon damage
+	local maxHp = math.floor((kit.class.hp * kit.mods.hpMult * (rm.hpMult or 1) + gear.hp) * power + 0.5)
+	local dmgMult = (rm.dmgMult or 1) * (if member.haki == "Armament" then 1.1 else 1) * power * gear.dmg
 	local hp = math.max(1, math.floor(maxHp * (member.hpFrac or 1) + 0.5))
 	return {
 		uid = "c" .. slot, side = "crew", member = member, player = member.player, userId = member.userId, name = member.name,
