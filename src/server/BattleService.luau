@@ -579,8 +579,9 @@ local function makeCrewUnit(battle, member, slot)
 	local kit = ClassDefs.kit(member.classId)
 	local race = CrewDefs.find(CrewDefs.Races, member.race)
 	local rm = race and race.mods or {}
-	local maxHp = math.floor(kit.class.hp * kit.mods.hpMult * (rm.hpMult or 1) + 0.5)
-	local dmgMult = (rm.dmgMult or 1) * (if member.haki == "Armament" then 1.1 else 1)
+	local power = 1 + 0.15 * (battle.power or 0) -- huge power-up after every sea boss
+	local maxHp = math.floor(kit.class.hp * kit.mods.hpMult * (rm.hpMult or 1) * power + 0.5)
+	local dmgMult = (rm.dmgMult or 1) * (if member.haki == "Armament" then 1.1 else 1) * power
 	local hp = math.max(1, math.floor(maxHp * (member.hpFrac or 1) + 0.5))
 	return {
 		uid = "c" .. slot, side = "crew", member = member, player = member.player, userId = member.userId, name = member.name,
@@ -638,7 +639,7 @@ function BattleService.fight(run, enemyIds, opts)
 	nextId += 1
 	local battle = {
 		id = nextId, run = run, sea = run.sea or 1, rng = Random.new(), round = 0, token = 0, pending = {},
-		crew = {}, enemies = {}, usedOnce = {}, over = false, won = false, mealBonus = opts.mealBonus,
+		crew = {}, enemies = {}, usedOnce = {}, over = false, won = false, mealBonus = opts.mealBonus, power = opts.power,
 	}
 	local members = {}
 	for _, m in run.members do
