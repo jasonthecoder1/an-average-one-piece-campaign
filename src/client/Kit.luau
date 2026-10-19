@@ -166,11 +166,13 @@ end
 
 -- Skewed red button with cream outline and a black offset shadow (page `.btn`).
 --   opts: Text, Size, Position, AnchorPoint, Parent, ZIndex, Color, TextSize, OnClick
+-- The button itself is see-through: a child always draws over its parent (Sibling ZIndex),
+-- so the black Drop and the colored Face are siblings inside it, Drop under Face.
 function Kit.button(opts)
 	local b = new("TextButton", {
 		Name = opts.Name or "Button",
 		AutoButtonColor = false,
-		BackgroundColor3 = opts.Color or Style.Red,
+		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Text = "",
 		Size = opts.Size or UDim2.fromOffset(160, 40),
@@ -180,17 +182,25 @@ function Kit.button(opts)
 		ZIndex = opts.ZIndex or 4,
 		Parent = opts.Parent,
 	})
-	Kit.stroke(b, opts.StrokeColor or Style.Cream, 3)
-	local sh = new("Frame", {
+	new("Frame", {
 		Name = "Drop",
 		BackgroundColor3 = Style.Black,
 		BorderSizePixel = 0,
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromOffset(4, 4),
-		ZIndex = b.ZIndex - 1,
+		ZIndex = b.ZIndex,
 		Parent = b,
 	})
-	local lbl = Kit.label({ Name = "Text", Text = opts.Text or "", Font = Style.Display, TextSize = opts.TextSize or 24, ZIndex = b.ZIndex + 1, Parent = b, Outline = 1.5 })
+	local face = new("Frame", {
+		Name = "Face",
+		BackgroundColor3 = opts.Color or Style.Red,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = b.ZIndex + 1,
+		Parent = b,
+	})
+	Kit.stroke(face, opts.StrokeColor or Style.Cream, 3)
+	local lbl = Kit.label({ Name = "Text", Text = opts.Text or "", Font = Style.Display, TextSize = opts.TextSize or 24, ZIndex = b.ZIndex + 2, Parent = b, Outline = 1.5 })
 	b.MouseEnter:Connect(function()
 		if b:GetAttribute("Disabled") then
 			return
@@ -207,13 +217,13 @@ function Kit.button(opts)
 			end
 		end)
 	end
-	sh.ZIndex = math.max(0, b.ZIndex - 1)
 	return b, lbl
 end
 
 function Kit.setDisabled(button, disabled, normalColor)
 	button:SetAttribute("Disabled", disabled)
-	button.BackgroundColor3 = if disabled then Style.Dim else (normalColor or Style.Red)
+	local face = button:FindFirstChild("Face") or button
+	face.BackgroundColor3 = if disabled then Style.Dim else (normalColor or Style.Red)
 	local t = button:FindFirstChild("Text")
 	if t then
 		t.TextColor3 = if disabled then Style.Muted else Style.Cream
@@ -325,7 +335,11 @@ function Kit.autoScale(gui, designW, designH)
 		s.Scale = math.clamp(math.min(v.X / (designW or 1280), v.Y / (designH or 720)), 0.5, 1.15)
 	end
 	update()
-	cam:GetPropertyChangedSignal("ViewportSize"):Connect(update)
+	-- let go of the camera when this screen is destroyed or cleared, so connections don't pile up
+	local conn = cam:GetPropertyChangedSignal("ViewportSize"):Connect(update)
+	s.Destroying:Connect(function()
+		conn:Disconnect()
+	end)
 	return s
 end
 

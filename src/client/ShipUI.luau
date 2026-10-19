@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
+local HttpService = game:GetService("HttpService")
 
 local Shared = ReplicatedStorage.Shared
 local ItemDefs = require(Shared.ItemDefs)
@@ -13,6 +14,7 @@ local new = Kit.new
 
 local player = Players.LocalPlayer
 local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Ship")
+local mapRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Map")
 
 local ShipUI = {}
 ShipUI.openChart = nil -- set by Main (MapUI.open)
@@ -21,6 +23,7 @@ ShipUI.blocked = nil
 local gui = Kit.screen("ShipScreens", 15, player:WaitForChild("PlayerGui"))
 Kit.autoScale(gui, 1100, 700)
 local inv = nil
+local invKey = nil -- the last inv as text: a refresh with nothing new doesn't rebuild the open screen
 local open = nil -- { kind, frame }
 
 local function close()
@@ -44,8 +47,8 @@ local function itemTile(parent, id, order, onClick, sub)
 	return holder
 end
 
-local function grid(parent, pos, size)
-	local g = new("ScrollingFrame", { BackgroundColor3 = Style.Black, BorderSizePixel = 0, Size = size, Position = pos, ZIndex = 11, ScrollBarThickness = 6, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = parent })
+local function grid(parent, name, pos, size)
+	local g = new("ScrollingFrame", { Name = name, BackgroundColor3 = Style.Black, BorderSizePixel = 0, Size = size, Position = pos, ZIndex = 11, ScrollBarThickness = 6, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = parent })
 	Kit.stroke(g, Style.Cream, 2)
 	new("UIGridLayout", { CellSize = UDim2.fromOffset(74, 86), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = g })
 	new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 6), Parent = g })
@@ -74,7 +77,7 @@ end
 local function showCraft()
 	local f = frame("Craft", "CRAFTING", 760, 520)
 	Kit.label({ Text = holdText(), Font = Style.Body, TextSize = 14, Color = Style.Gold, Wrap = true, XAlign = Enum.TextXAlignment.Left, Size = UDim2.new(1, -40, 0, 36), Position = UDim2.fromOffset(20, 16), ZIndex = 12, Parent = f })
-	local list = new("ScrollingFrame", { BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, -40, 1, -76), Position = UDim2.fromOffset(20, 58), ZIndex = 11, ScrollBarThickness = 6, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = f })
+	local list = new("ScrollingFrame", { Name = "Recipes", BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, -40, 1, -76), Position = UDim2.fromOffset(20, 58), ZIndex = 11, ScrollBarThickness = 6, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = f })
 	new("UIGridLayout", { CellSize = UDim2.fromOffset(345, 84), CellPadding = UDim2.fromOffset(12, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
 	for i, r in ItemDefs.Recipes do
 		local def = ItemDefs.Items[r.out]
@@ -118,16 +121,17 @@ local function showStorage(which)
 	local otherMax = if isChest then ItemDefs.ChestSlots else ItemDefs.LockerSlots
 	Kit.label({ Text = "YOUR BAG " .. #inv.bag .. "/" .. ItemDefs.BagSlots, Font = Style.Display, TextSize = 20, XAlign = Enum.TextXAlignment.Left, Size = UDim2.fromOffset(300, 22), Position = UDim2.fromOffset(20, 40), ZIndex = 12, Parent = f })
 	Kit.label({ Text = (if isChest then "CREW CHEST " else "LOCKER ") .. #other .. "/" .. otherMax, Font = Style.Display, TextSize = 20, XAlign = Enum.TextXAlignment.Left, Size = UDim2.fromOffset(300, 22), Position = UDim2.fromOffset(392, 40), ZIndex = 12, Parent = f })
-	local left = grid(f, UDim2.fromOffset(20, 66), UDim2.new(0, 348, 1, -88))
-	local right = grid(f, UDim2.fromOffset(392, 66), UDim2.new(0, 348, 1, -88))
+	local left = grid(f, "Bag", UDim2.fromOffset(20, 66), UDim2.new(0, 348, 1, -88))
+	local right = grid(f, "Other", UDim2.fromOffset(392, 66), UDim2.new(0, 348, 1, -88))
+	-- the id goes along with the index: the server checks it's still that item
 	for i, id in inv.bag do
 		itemTile(left, id, i, function()
-			remote:FireServer("move", { from = "bag", to = which, index = i })
+			remote:FireServer("move", { from = "bag", to = which, index = i, id = id })
 		end)
 	end
 	for i, id in other do
 		itemTile(right, id, i, function()
-			remote:FireServer("move", { from = which, to = "bag", index = i })
+			remote:FireServer("move", { from = which, to = "bag", index = i, id = id })
 		end)
 	end
 end
@@ -152,14 +156,16 @@ local function showBag()
 		end
 	end
 	Kit.label({ Text = "BAG " .. #inv.bag .. "/" .. ItemDefs.BagSlots .. "  (click: equip gear / use items)", Font = Style.Body, TextSize = 13, Color = Style.Red2, XAlign = Enum.TextXAlignment.Left, Size = UDim2.fromOffset(500, 18), Position = UDim2.fromOffset(20, 146), ZIndex = 12, Parent = f })
-	local g = grid(f, UDim2.fromOffset(20, 168), UDim2.new(1, -40, 1, -214))
+	local g = grid(f, "Bag", UDim2.fromOffset(20, 168), UDim2.new(1, -40, 1, -214))
 	for i, id in inv.bag do
 		local def = ItemDefs.Items[id]
 		itemTile(g, id, i, function()
-			if def.kind == "use" then
-				remote:FireServer("use", i)
+			if not def then
+				return
+			elseif def.kind == "use" then
+				remote:FireServer("use", { index = i, id = id })
 			elseif def.kind == "weapon" or def.kind == "armor" then
-				remote:FireServer("equip", i)
+				remote:FireServer("equip", { index = i, id = id })
 			end
 		end)
 	end
@@ -176,7 +182,7 @@ local function showRepairs()
 	local idx = table.find(inv.bag, "Hull Patch")
 	local b = Kit.button({ Text = "USE HULL PATCH", TextSize = 20, Size = UDim2.fromOffset(220, 44), Position = UDim2.new(0.5, -110, 1, -64), ZIndex = 13, Parent = f, OnClick = function()
 		if idx then
-			remote:FireServer("use", idx)
+			remote:FireServer("use", { index = idx, id = "Hull Patch" })
 		end
 	end })
 	if not idx or inv.hull >= inv.hullMax then
@@ -184,9 +190,24 @@ local function showRepairs()
 	end
 end
 
+local function setScroll(f, scroll)
+	for _, d in f:GetDescendants() do
+		if d:IsA("ScrollingFrame") and scroll[d.Name] then
+			d.CanvasPosition = scroll[d.Name]
+		end
+	end
+end
+
 local function reopen()
 	if not open or not inv then
 		return
+	end
+	-- keep the lists where they were scrolled, so a refresh doesn't jump back to the top
+	local scroll = {}
+	for _, d in open.frame:GetDescendants() do
+		if d:IsA("ScrollingFrame") then
+			scroll[d.Name] = d.CanvasPosition
+		end
 	end
 	local k = open.kind
 	if k == "Craft" then
@@ -199,6 +220,10 @@ local function reopen()
 		showBag()
 	elseif k == "Repairs" then
 		showRepairs()
+	end
+	if open then
+		setScroll(open.frame, scroll)
+		task.delay(0, setScroll, open.frame, scroll) -- again once the new list has its size
 	end
 end
 
@@ -259,11 +284,25 @@ end)
 function ShipUI.init()
 	remote.OnClientEvent:Connect(function(msg, data)
 		if msg == "inv" then
+			local ok, key = pcall(HttpService.JSONEncode, HttpService, data)
+			local same = ok and key == invKey
+			invKey = if ok then key else nil
 			inv = data
 			hullText.Text = "HULL " .. data.hull .. "/" .. data.hullMax .. "   ·   HP " .. math.floor((data.hpFrac or 1) * 100) .. "%"
 			setHull(data.hull / data.hullMax)
 			hud.Visible = not (ShipUI.blocked and ShipUI.blocked())
-			reopen()
+			if not same then
+				reopen()
+			end
+		end
+	end)
+	-- the run is over: forget its bag and close its screens (MapUI shows the result)
+	mapRemote.OnClientEvent:Connect(function(msg)
+		if msg == "runEnd" then
+			inv = nil
+			invKey = nil
+			close()
+			hud.Visible = false
 		end
 	end)
 end

@@ -45,6 +45,14 @@ local function setCamera(on)
 		end
 		local t0 = os.clock()
 		camConn = RunService.RenderStepped:Connect(function()
+			-- a (re)spawn can swap the camera or set it back to Custom: take it back every frame
+			cam = workspace.CurrentCamera
+			if not cam then
+				return -- the new camera isn't there yet
+			end
+			if cam.CameraType ~= Enum.CameraType.Scriptable then
+				cam.CameraType = Enum.CameraType.Scriptable
+			end
 			local t = os.clock() - t0
 			-- the ship map can set the shot with a part named LobbyCamera (front face = where it looks);
 			-- otherwise slowly swing around the ship

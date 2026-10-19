@@ -17,6 +17,9 @@ Run.current = nil
 Run.onShip = nil -- function(run): put the crew on the ship (set by ShipService)
 Run.onEnd = nil -- function(run, won): back to the lobby (set by LobbyService)
 Run.onChanged = nil -- function(run): bag / gold changed (ShipService refreshes its screens)
+Run.onLeave = nil -- function(run, m): a crewmate is leaving the server (LobbyService keeps their bounty)
+
+local READY_WAIT = 60 -- once half the crew is Ready, the rest get this many seconds
 
 local ROLE_IDS = {}
 for _, r in CrewDefs.Roles do
@@ -85,6 +88,7 @@ local function chartFor(run, m)
 	return {
 		view = MapDefs.publicView(run.map, isNav), at = run.at, visited = run.visited, state = run.state,
 		options = run.map.nodes[run.at].next, ready = readyIds, votes = votes, deadline = run.voteDeadline and (run.voteDeadline - os.clock()) or nil,
+		readyDeadline = run.readyDeadline and (run.readyDeadline - os.clock()) or nil, -- seconds until the ship sails anyway
 		captainId = cap and cap.userId, navigator = isNav, gold = run.gold, sea = run.sea, seaName = BattleDefs.Seas[run.sea].name,
 		crew = crew, power = run.power, bag = run.bag,
 	}
@@ -138,6 +142,7 @@ function Run.card(run, card)
 		return
 	end
 	local decider = captain(run) or list[1]
+	run.cardDeciderId = decider.userId -- fixed for this card, even if a late joiner becomes Captain meanwhile
 	run.cardToken = (run.cardToken or 0) + 1
 	local token = run.cardToken
 	local choices = {}
@@ -205,7 +210,10 @@ end
 -- ===== stops =====
 
 local function fight(run, enemies, kind, title)
-	local opts = { kind = kind, title = title, mealBonus = run.mealBonus, power = run.power }
+	-- the Cook's meal + the Musician's shanty, both used up by this fight
+	local bonus = (run.cookBonus or 0) + (run.mealBonus or 0)
+	local opts = { kind = kind, title = title, mealBonus = if bonus > 0 then bonus else nil, power = run.power }
+	run.cookBonus = nil
 	run.mealBonus = nil
 	for _, m in members(run) do
 		Remotes.Map:FireClient(m.player, "close")
@@ -276,26 +284,61 @@ end
 
 -- ===== the loop =====
 
+local function crewToast(run, text)
+	for _, m in members(run) do
+		Remotes.toast(m.player, text)
+	end
+end
+
 local function waitReady(run)
 	run.state = "ship"
 	run.ready = {}
 	run.forced = false
 	run.votes = {}
 	run.voteDeadline = nil
+	run.readyDeadline = nil
 	Run.broadcast(run)
+	local announced, warned = false, false -- the "sails in 60" toast only once per visit (Ready on/off can't spam it)
 	while true do
 		local list = members(run)
 		if #list == 0 then
+			run.readyDeadline = nil
 			return false
 		end
-		local all = true
+		local n = 0
 		for _, m in list do
-			if not run.ready[m.userId] then
-				all = false
+			if run.ready[m.userId] then
+				n += 1
 			end
 		end
-		if all or run.forced then
+		if n == #list or run.forced then
+			run.readyDeadline = nil
 			return true
+		end
+		-- one AFK crewmate (or no player Captain to Force) can't hold the ship forever:
+		-- once half the crew is Ready a countdown starts, and when it ends the ship sails anyway
+		if n >= math.ceil(#list / 2) and not run.readyDeadline then
+			run.readyDeadline = os.clock() + READY_WAIT
+			if not announced then
+				announced = true
+				crewToast(run, "Half the crew is Ready! The ship sails in " .. READY_WAIT .. " seconds.")
+			end
+			Run.broadcast(run)
+		elseif n == 0 and run.readyDeadline then
+			run.readyDeadline = nil -- everyone took their Ready back: stop the countdown
+			warned = false
+			Run.broadcast(run)
+		end
+		if run.readyDeadline then
+			local left = run.readyDeadline - os.clock()
+			if left <= 0 then
+				run.readyDeadline = nil
+				crewToast(run, "Time's up! The ship sets sail.")
+				return true
+			elseif left <= 10 and not warned then
+				warned = true
+				crewToast(run, "The ship sails in 10 seconds! Press READY at the map table.")
+			end
 		end
 		task.wait(0.2)
 	end
@@ -377,11 +420,11 @@ local function loop(run)
 			run.active = false
 			break
 		end
-		-- the Cook's meal after every stop
+		-- the Cook's meal after every stop (its own field, so a Musician's shanty in run.mealBonus isn't wiped)
 		local cook = run.roleHolders.Cook
 		local s = if cook == "npc" then CrewDefs.NpcScale else 1
 		healAll(run, 0.15 * s)
-		run.mealBonus = 0.05 * s
+		run.cookBonus = 0.05 * s
 		Remotes.toast(nil, (if cook == "npc" then "The NPC cook" else cook.name) .. " cooks a meal: crew heals " .. math.floor(15 * s) .. "% and hits harder next fight.")
 	end
 	run.active = false
@@ -391,11 +434,12 @@ local function loop(run)
 		Remotes.Map:FireClient(m.player, "runEnd", { won = won, sea = run.sea, bounty = m.bounty, gold = run.gold })
 	end
 	task.wait(6)
+	-- only the current run may send everyone back to the lobby (never open it over a newer run)
 	if Run.current == run then
 		Run.current = nil
-	end
-	if Run.onEnd then
-		Run.onEnd(run, won)
+		if Run.onEnd then
+			Run.onEnd(run, won)
+		end
 	end
 end
 
@@ -404,6 +448,7 @@ function Run.start(list)
 	local run = {
 		active = true, members = {}, sea = 1, gold = 0, bag = {}, power = 0, rng = Random.new(),
 		ready = {}, votes = {}, state = "ship",
+		departed = {}, -- [userId] = the member table of a crewmate who left (given back if they rejoin)
 	}
 	for _, m in list do
 		m.hpFrac = 1
@@ -420,14 +465,24 @@ function Run.start(list)
 end
 
 function Run.addMember(run, m)
-	m.hpFrac = 1
-	m.bounty = m.bounty or 0
+	-- a crewmate who left and came back gets their HP, bounty and gear back (no free heal, no lost gear)
+	local back = run.departed[m.userId]
+	run.departed[m.userId] = nil
+	if back then
+		m.hpFrac, m.bounty = back.hpFrac or 1, back.bounty or 0
+		m.items, m.gear, m.locker = back.items, back.gear, back.locker
+	else
+		m.hpFrac = 1
+		m.bounty = m.bounty or 0
+	end
 	-- keep "one of each role": a late joiner whose role is taken gets a free one
 	local taken = {}
 	for _, x in members(run) do
 		taken[x.role or ""] = true
 	end
-	if m.role == nil or taken[m.role] then
+	if back and back.role and not taken[back.role] then
+		m.role = back.role -- their old job, if nobody took it meanwhile
+	elseif m.role == nil or taken[m.role] then
 		m.role = nil
 		for _, id in ROLE_IDS do
 			if not taken[id] then
@@ -443,7 +498,23 @@ end
 
 -- ===== remote =====
 
+-- spam guard: each player gets at most 10 messages a second, the rest are ignored
+local msgCount = {} -- [Player] = { t = when this second started, n = messages in it }
+local function spam(player)
+	local now = os.clock()
+	local c = msgCount[player]
+	if not c or now - c.t >= 1 then
+		msgCount[player] = { t = now, n = 1 }
+		return false
+	end
+	c.n += 1
+	return c.n > 10
+end
+
 Remotes.Map.OnServerEvent:Connect(function(player, msg, data)
+	if spam(player) then
+		return
+	end
 	local run = Run.current
 	if not run or not run.active then
 		return
@@ -457,19 +528,18 @@ Remotes.Map.OnServerEvent:Connect(function(player, msg, data)
 		Run.broadcast(run)
 	elseif msg == "force" and run.state == "ship" then
 		local cap = captain(run)
-		if cap == m then
+		if cap == m and not run.forced then
 			run.forced = true
 			Remotes.toast(nil, m.name .. " (Captain) forces everyone to set sail!")
 		end
 	elseif msg == "vote" and run.state == "vote" and type(data) == "number" then
-		if table.find(run.map.nodes[run.at].next, data) then
+		-- only a new vote is stored and sent out
+		if table.find(run.map.nodes[run.at].next, data) and run.votes[m.userId] ~= data then
 			run.votes[m.userId] = data
 			Run.broadcast(run)
 		end
 	elseif msg == "card" and type(data) == "table" and data.token == run.cardToken then
-		local list = members(run)
-		local decider = captain(run) or list[1]
-		if decider == m and type(data.index) == "number" then
+		if m.userId == run.cardDeciderId and type(data.index) == "number" then
 			run.cardReply = math.floor(data.index)
 		end
 	elseif msg == "view" then
@@ -478,10 +548,15 @@ Remotes.Map.OnServerEvent:Connect(function(player, msg, data)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	msgCount[player] = nil
 	local run = Run.current
 	if run then
 		for i, m in run.members do
 			if m.player == player then
+				if Run.onLeave then
+					Run.onLeave(run, m)
+				end
+				run.departed[m.userId] = m -- kept in case they rejoin this run
 				table.remove(run.members, i)
 				break
 			end

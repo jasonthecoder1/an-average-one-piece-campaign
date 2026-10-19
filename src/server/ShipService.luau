@@ -13,12 +13,14 @@ local CrewDefs = require(Shared.CrewDefs)
 local Remotes = require(script.Parent.Remotes)
 local Run = require(script.Parent.Run)
 local MapLoader = require(script.Parent.MapLoader)
+local BattleService = require(script.Parent.BattleService)
 
 local ShipService = {}
 
 local ship
 local deckY = 10 -- floor height of the deck (read from DeckSpot1 once the ship is loaded)
-ShipService.Stations = {} -- [name] = { part, label, role? }
+local HOLD_DEPTH = 150 -- lobby-only characters wait this far under the deck, out of sight and off the deck spots
+ShipService.Stations = {} -- [name] = { part, label, role?, baseColor }
 
 -- marker name -> sign text, prompt text, role that may use it (nil = anyone)
 ShipService.StationList = {
@@ -37,6 +39,7 @@ ShipService.StationList = {
 local WOOD = Color3.fromRGB(150, 100, 60)
 local DARK = Color3.fromRGB(100, 65, 38)
 local CREAM = Color3.fromRGB(243, 234, 215)
+local BUILT = Color3.fromRGB(200, 150, 60) -- the Crew Chest once it's built
 
 local function part(props)
 	local p = Instance.new("Part")
@@ -59,7 +62,8 @@ local function buildStandIn()
 	local m = Instance.new("Model")
 	m.Name = "StandInShip"
 	local y = 10
-	part({ Name = "Sea", Size = Vector3.new(2048, 2, 2048), Position = Vector3.new(0, -1, 0), Color = Color3.fromRGB(35, 115, 185), Material = Enum.Material.Glass, Transparency = 0.1, Parent = m })
+	-- the sea is only a look: you sink through it, so the fall rescue below can fish you out
+	part({ Name = "Sea", Size = Vector3.new(2048, 2, 2048), Position = Vector3.new(0, -1, 0), Color = Color3.fromRGB(35, 115, 185), Material = Enum.Material.Glass, Transparency = 0.1, CanCollide = false, CanQuery = false, CanTouch = false, Parent = m })
 	part({ Name = "Hull", Size = Vector3.new(80, 10, 28), Position = Vector3.new(0, y - 5, 0), Color = DARK, Parent = m })
 	part({ Name = "Deck", Size = Vector3.new(80, 1, 28), Position = Vector3.new(0, y - 0.5, 0), Color = WOOD, Parent = m })
 	part({ Name = "RailN", Size = Vector3.new(80, 3, 1), Position = Vector3.new(0, y + 1.5, 14), Color = DARK, Parent = m })
@@ -76,7 +80,7 @@ local function buildStandIn()
 		Lockers = { Vector3.new(-21, 0, 11.5), Vector3.new(7, 6, 2) },
 		Galley = { Vector3.new(24, 0, -10), Vector3.new(5, 4, 3) },
 		Infirmary = { Vector3.new(24, 0, 10), Vector3.new(6, 2, 3.5) },
-		CrowsNest = { Vector3.new(4, 0, -3.5), Vector3.new(2, 8, 1) },
+		CrowsNest = { Vector3.new(4, 0, -7), Vector3.new(2, 8, 1) }, -- clear of DeckSpot2
 		Stage = { Vector3.new(33, 0, 0), Vector3.new(6, 1, 6) },
 		Study = { Vector3.new(-30, 0, -7), Vector3.new(1.5, 7, 6) },
 	}
@@ -120,7 +124,7 @@ local function decorate(p, info)
 	st.Thickness = 2
 	st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	st.Parent = t
-	ShipService.Stations[info.name] = { part = p, label = info.label, role = info.role }
+	ShipService.Stations[info.name] = { part = p, label = info.label, role = info.role, baseColor = p.Color }
 end
 
 function ShipService.build()
@@ -168,6 +172,8 @@ function ShipService.build()
 			s.Enabled = false
 		end
 	end
+	-- a hidden pad under the deck where lobby-only characters wait (see onCharacter)
+	part({ Name = "LobbyHold", Size = Vector3.new(16, 1, 16), CFrame = ShipService.holdSpot() * CFrame.new(0, -3.5, 0), Transparency = 1, CanQuery = false, CanTouch = false, Parent = ship })
 	return ship
 end
 
@@ -186,6 +192,18 @@ function ShipService.deckSpot(i)
 	local col = (i - 1) % 3
 	local row = math.floor((i - 1) / 3)
 	return CFrame.new(-2 + col * 5, deckY + 3, -3 + row * 6)
+end
+
+-- Where lobby-only characters wait (root height): far under DeckSpot1, out of the lobby camera's shot.
+function ShipService.holdSpot()
+	return ShipService.deckSpot(1) - Vector3.new(0, HOLD_DEPTH, 0)
+end
+
+-- Stand crewmate i on their deck spot.
+local function putOnDeck(root, i)
+	root.Anchored = false
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.CFrame = ShipService.deckSpot(i)
 end
 
 -- ===== inventory =====
@@ -213,7 +231,23 @@ local function invFor(run, m)
 	}
 end
 
+-- Put crewmates who aren't aboard yet (late joiners, still in the lobby hold) on their deck spot.
+local function seatLate(run)
+	if not run.active then
+		return
+	end
+	for i, m in Run.members(run) do
+		local ch = m.player.Character
+		local root = ch and ch:FindFirstChild("HumanoidRootPart")
+		if not m.aboard and root and not BattleService.inBattle(m.player) then
+			m.aboard = true
+			putOnDeck(root, i)
+		end
+	end
+end
+
 function ShipService.push(run)
+	seatLate(run) -- Run.addMember broadcasts (which pushes), so a late joiner lands on deck right away
 	for _, m in Run.members(run) do
 		Remotes.Ship:FireClient(m.player, "inv", invFor(run, m))
 	end
@@ -222,6 +256,22 @@ end
 local function say(player, text)
 	Remotes.toast(player, text)
 end
+
+-- An item click from the client: { index = n, id = "Item Name" }. The id must still sit at that index, so a
+-- double click or a crewmate's click on the shared chest can't hit whatever slid into that slot.
+local function pick(list, data)
+	if type(data) ~= "table" or type(data.index) ~= "number" or type(data.id) ~= "string" then
+		return nil
+	end
+	local index = math.floor(data.index)
+	if list[index] == nil or list[index] ~= data.id then
+		return nil
+	end
+	return index
+end
+
+-- The handlers below return "crew" when they changed something the whole crew sees (ship hold, Crew Chest,
+-- hull) and "sent" when Run.broadcast already refreshed everyone. Anything else only refreshes the sender.
 
 local function onCraft(player, m, run, index)
 	if not near(player, "CraftBench") then
@@ -235,14 +285,14 @@ local function onCraft(player, m, run, index)
 	for item, n in recipe.needs do
 		if (run.bag[item] or 0) < n then
 			say(player, "Not enough " .. item .. ".")
-		return
+			return
 		end
 	end
 	local out = ItemDefs.Items[recipe.out]
 	if out.kind == "build" then
 		if run.chestBuilt then
 			say(player, "The Crew Chest is already built.")
-		return
+			return
 		end
 	elseif #m.items >= ItemDefs.BagSlots then
 		say(player, "Your bag is full. Put something in the Crew Chest or your locker.")
@@ -258,7 +308,7 @@ local function onCraft(player, m, run, index)
 		run.chestBuilt = true
 		local st = ShipService.Stations.CrewChest
 		if st then
-			st.part.Color = Color3.fromRGB(200, 150, 60)
+			st.part.Color = BUILT
 		end
 		Remotes.toast(nil, m.name .. " built the CREW CHEST! Everyone can store gear in it now.")
 	else
@@ -272,6 +322,7 @@ local function onCraft(player, m, run, index)
 			say(player, "Crafted: " .. out.name)
 		end
 	end
+	return "crew" -- the ship hold is shared
 end
 
 local function storage(run, m, name)
@@ -290,7 +341,11 @@ local function storage(run, m, name)
 end
 
 local function onMove(player, m, run, data)
-	if type(data) ~= "table" or type(data.index) ~= "number" then
+	if type(data) ~= "table" then
+		return
+	end
+	-- one side is always your bag (chest <-> locker would only check one of the two stations)
+	if data.from ~= "bag" and data.to ~= "bag" then
 		return
 	end
 	local from = storage(run, m, data.from)
@@ -306,21 +361,28 @@ local function onMove(player, m, run, data)
 		say(player, "Walk to the Lockers.")
 		return
 	end
-	local item = from[math.floor(data.index)]
-	if not item then
+	local index = pick(from, data)
+	if not index then
 		return
 	end
 	if #to >= toMax then
 		say(player, "That's full.")
 		return
 	end
-	table.remove(from, math.floor(data.index))
-	table.insert(to, item)
+	table.insert(to, table.remove(from, index))
+	if other == "chest" then
+		return "crew"
+	end
+	return nil
 end
 
-local function onEquip(player, m, index)
+local function onEquip(player, m, data)
+	local index = pick(m.items, data)
+	if not index then
+		return
+	end
 	local item = m.items[index]
-	local def = item and ItemDefs.Items[item]
+	local def = ItemDefs.Items[item]
 	if not def or (def.kind ~= "weapon" and def.kind ~= "armor") then
 		return
 	end
@@ -349,27 +411,39 @@ local function onUnequip(player, m, slot)
 	m.gear[slot] = nil
 end
 
-local function onUse(player, m, run, index)
-	local item = m.items[index]
-	local def = item and ItemDefs.Items[item]
+local function onUse(player, m, run, data)
+	local index = pick(m.items, data)
+	if not index then
+		return
+	end
+	local def = ItemDefs.Items[m.items[index]]
 	if not def or def.kind ~= "use" then
 		return
 	end
 	if def.heal then
 		if (m.hpFrac or 1) >= 1 then
 			say(player, "You're already at full health.")
-		return
+			return
 		end
 		m.hpFrac = math.min(1, (m.hpFrac or 1) + def.heal)
 	elseif def.hull then
 		if not near(player, "RepairBench") then
 			say(player, "Use Hull Patches at the Repairs station.")
-		return
+			return
+		end
+		-- don't eat the patch for nothing (Marine attacks that hurt the hull come later)
+		if (run.hull or ItemDefs.HullMax) >= ItemDefs.HullMax then
+			say(player, "The hull is already fully repaired.")
+			return
 		end
 		run.hull = math.min(ItemDefs.HullMax, (run.hull or ItemDefs.HullMax) + def.hull)
 	end
 	table.remove(m.items, index)
 	say(player, "Used " .. def.name .. ".")
+	if def.hull then
+		return "crew" -- everyone sees the hull
+	end
+	return nil
 end
 
 -- role stations: once per ship visit each
@@ -412,10 +486,19 @@ local function onStation(player, m, run, name)
 		return
 	end
 	run.stationUsed[name] = true
-	Run.broadcast(run)
+	Run.broadcast(run) -- also refreshes everyone's ship screens (Run.onChanged)
+	return "sent"
 end
 
+local MSG_GAP = 0.1 -- seconds between two Ship messages from one player (plenty for clicking around)
+local lastMsg = {} -- [Player] = os.clock() of their last Ship message
+
 Remotes.Ship.OnServerEvent:Connect(function(player, msg, data)
+	local now = os.clock()
+	if now - (lastMsg[player] or 0) < MSG_GAP then
+		return
+	end
+	lastMsg[player] = now
 	local m, run = member(player)
 	if not m then
 		return
@@ -423,20 +506,26 @@ Remotes.Ship.OnServerEvent:Connect(function(player, msg, data)
 	m.items = m.items or {}
 	m.gear = m.gear or {}
 	m.locker = m.locker or {}
+	local result
 	if msg == "craft" and type(data) == "number" then
-		onCraft(player, m, run, math.floor(data))
+		result = onCraft(player, m, run, math.floor(data))
 	elseif msg == "move" then
-		onMove(player, m, run, data)
-	elseif msg == "equip" and type(data) == "number" then
-		onEquip(player, m, math.floor(data))
+		result = onMove(player, m, run, data)
+	elseif msg == "equip" then
+		onEquip(player, m, data)
 	elseif msg == "unequip" then
 		onUnequip(player, m, data)
-	elseif msg == "use" and type(data) == "number" then
-		onUse(player, m, run, math.floor(data))
+	elseif msg == "use" then
+		result = onUse(player, m, run, data)
 	elseif msg == "station" and type(data) == "string" then
-		onStation(player, m, run, data)
+		result = onStation(player, m, run, data)
 	end
-	ShipService.push(run)
+	if result == "crew" then
+		ShipService.push(run)
+	elseif result ~= "sent" then
+		-- only your own things changed (or nothing did): refresh just your screens
+		Remotes.Ship:FireClient(player, "inv", invFor(run, m))
+	end
 end)
 
 -- put the crew on deck (called by Run before every Ready)
@@ -444,31 +533,39 @@ function ShipService.board(run)
 	ShipService.build()
 	run.stationUsed = {}
 	run.hull = run.hull or ItemDefs.HullMax
+	-- a new run starts with no Crew Chest: show it unbuilt again
+	local chest = ShipService.Stations.CrewChest
+	if chest then
+		chest.part.Color = if run.chestBuilt then BUILT else chest.baseColor
+	end
 	for i, m in Run.members(run) do
 		m.items = m.items or {}
 		m.gear = m.gear or {}
 		m.locker = m.locker or {}
+		m.aboard = true
 		local ch = m.player.Character
 		local root = ch and ch:FindFirstChild("HumanoidRootPart")
 		if root then
-			root.Anchored = false
-			root.CFrame = ShipService.deckSpot(i)
+			putOnDeck(root, i)
 		end
 	end
 	ShipService.push(run)
 end
 
--- anyone who jumps the rail is fished back out (drowning for fruit users comes with Devil Fruits)
+-- Anyone who jumps the rail is fished back out (drowning for fruit users comes with Devil Fruits). This runs
+-- whenever you're not in a fight: the crew also walks the deck during the vote and at card stops.
+-- A late joiner (in the lobby hold, or wherever the lobby left them) is put on deck the same way.
 task.spawn(function()
 	while true do
 		task.wait(0.5)
 		local run = Run.current
-		if run and run.state == "ship" then
+		if run and run.active then
+			seatLate(run)
 			for i, m in Run.members(run) do
 				local ch = m.player.Character
 				local root = ch and ch:FindFirstChild("HumanoidRootPart")
-				if root and root.Position.Y < deckY - 8 then
-					root.CFrame = ShipService.deckSpot(i)
+				if root and root.Position.Y < deckY - 8 and not BattleService.inBattle(m.player) then
+					putOnDeck(root, i)
 					say(m.player, "SPLASH! Your crew fished you out of the sea.")
 				end
 			end
@@ -476,17 +573,43 @@ task.spawn(function()
 	end
 end)
 
-Players.PlayerAdded:Connect(function(player)
+-- A new character: crewmates go to their own deck spot. Lobby-only players wait in the hold under the deck
+-- (LobbyService freezes them there), so nobody stands frozen on a spot where a crewmate gets placed.
+local function onCharacter(player, ch)
+	local root = ch:WaitForChild("HumanoidRootPart", 5)
+	if not root then
+		return
+	end
+	task.wait()
+	if root.Parent ~= ch or player.Character ~= ch then
+		return
+	end
+	local m, run = member(player)
+	if not m then
+		local spread = Vector3.new(math.random(-6, 6), 0, math.random(-6, 6)) -- don't stack them all on one spot
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.CFrame = ShipService.holdSpot() + spread
+	elseif not BattleService.inBattle(player) then
+		m.aboard = true
+		putOnDeck(root, table.find(Run.members(run), m) or 1)
+	end
+end
+
+local function onPlayer(player)
 	player.CharacterAdded:Connect(function(ch)
-		local run = Run.current
-		if run and run.state == "ship" then
-			local root = ch:WaitForChild("HumanoidRootPart", 5)
-			if root then
-				task.wait()
-				root.CFrame = ShipService.deckSpot(1)
-			end
-		end
+		onCharacter(player, ch)
 	end)
+	if player.Character then
+		task.spawn(onCharacter, player, player.Character)
+	end
+end
+Players.PlayerAdded:Connect(onPlayer)
+for _, player in Players:GetPlayers() do
+	onPlayer(player)
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	lastMsg[player] = nil
 end)
 
 return ShipService

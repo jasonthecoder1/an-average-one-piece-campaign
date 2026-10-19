@@ -114,6 +114,20 @@ function Arena.load(kind, bossId, sea)
 	end
 	if template then
 		current = MapLoader.place(template, folder, "Map")
+		-- a Folder map gets wrapped in a Model, so the rest of the code can always use GetPivot
+		if current:IsA("Folder") then
+			local model = Instance.new("Model")
+			model.Name = current.Name
+			for _, c in current:GetChildren() do
+				c.Parent = model
+			end
+			current:Destroy()
+			if model:FindFirstChildWhichIsA("BasePart", true) then
+				model.WorldPivot = model:GetBoundingBox() -- pivot in the middle of the map, not at 0,0,0
+			end
+			model.Parent = folder
+			current = model
+		end
 	else
 		current = buildStandIn()
 		current.Name = "Map"
@@ -145,7 +159,11 @@ local function center()
 		if c1 and e1 then
 			return (MapLoader.groundCFrame(c1).Position + MapLoader.groundCFrame(e1).Position) / 2
 		end
-		return current:GetPivot().Position
+		if current:IsA("PVInstance") then
+			return current:GetPivot().Position
+		end
+		local p = current:FindFirstChildWhichIsA("BasePart", true)
+		return if p then p.Position else C
 	end
 	return C
 end

@@ -79,7 +79,12 @@ end
 local function buildGrid(chart)
 	local view = chart.view
 	local area = refs.area
-	area:ClearAllChildren()
+	-- clear the old grid but keep the area's cream border
+	for _, ch in area:GetChildren() do
+		if not ch:IsA("UIStroke") then
+			ch:Destroy()
+		end
+	end
 	local sea = if view.weather == "Night" then Color3.fromRGB(10, 20, 32) elseif view.weather == "Stormy" then Color3.fromRGB(15, 32, 48) else Color3.fromRGB(16, 40, 61)
 	for r = 0, MapDefs.Rows - 1 do
 		for c = 0, MapDefs.Cols - 1 do
@@ -273,10 +278,13 @@ local function showCard(data)
 	end
 	closeChart()
 	local mine = data.deciderId == player.UserId
+	-- with an NPC Captain the first player decides instead
+	local isCaptain = MapUI.chart ~= nil and MapUI.chart.captainId == player.UserId
+	local whoText = if not mine then data.deciderName .. " is choosing..." elseif isCaptain then "You decide (you're the Captain)." else "You decide (no player Captain)."
 	cardFrame = Kit.panel({ Name = "Card", Size = UDim2.fromOffset(520, 150 + #data.choices * 56), Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 30, Parent = gui, Rotation = -0.8 })
 	Kit.tab(cardFrame, data.title, 260)
 	Kit.label({ Text = data.text, Font = Style.Body, TextSize = 18, Wrap = true, Size = UDim2.new(1, -40, 0, 60), Position = UDim2.fromOffset(20, 18), ZIndex = 32, Parent = cardFrame })
-	Kit.label({ Text = if mine then "You decide (you're the Captain)." else data.deciderName .. " is choosing...", Font = Style.BodyLight, TextSize = 13, Color = Style.Cyan, Size = UDim2.new(1, -40, 0, 18), Position = UDim2.fromOffset(20, 80), ZIndex = 32, Parent = cardFrame })
+	Kit.label({ Text = whoText, Font = Style.BodyLight, TextSize = 13, Color = Style.Cyan, Size = UDim2.new(1, -40, 0, 18), Position = UDim2.fromOffset(20, 80), ZIndex = 32, Parent = cardFrame })
 	for i, c in data.choices do
 		local b = Kit.button({ Text = c.label, TextSize = 20, Size = UDim2.new(1, -40, 0, 44), Position = UDim2.fromOffset(20, 104 + (i - 1) * 56), ZIndex = 33, Parent = cardFrame, OnClick = function()
 			remote:FireServer("card", { token = data.token, index = i })

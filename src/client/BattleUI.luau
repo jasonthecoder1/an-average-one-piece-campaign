@@ -523,6 +523,14 @@ local function setCamera(camPos, camLook)
 	end
 	local t0 = os.clock()
 	camConn = RunService.RenderStepped:Connect(function()
+		-- a respawn can swap the camera or set it back to Custom: take it back every frame
+		cam = workspace.CurrentCamera
+		if not cam then
+			return -- the new camera isn't there yet
+		end
+		if cam.CameraType ~= Enum.CameraType.Scriptable then
+			cam.CameraType = Enum.CameraType.Scriptable
+		end
 		-- a slow gentle sway so the scene feels alive
 		local t = os.clock() - t0
 		cam.CFrame = base * CFrame.new(math.sin(t * 0.3) * 0.6, math.sin(t * 0.21) * 0.3, 0)
@@ -553,7 +561,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 	local cam = workspace.CurrentCamera
-	local ray = cam:ViewportPointToRay(input.Position.X, input.Position.Y)
+	-- input.Position is measured from below the topbar, the same as ScreenPointToRay
+	local ray = cam:ScreenPointToRay(input.Position.X, input.Position.Y)
 	local arena = workspace:FindFirstChild("Arena")
 	if not arena then
 		return
@@ -654,7 +663,7 @@ local function onMessage(msg, data, extra)
 		endChoosing()
 		ui.banner.Text = "DODGE!"
 		local result = DodgeBox.run(gui, data)
-		remote:FireServer("dodge", { token = data.token, hits = result.hits, grazes = result.grazes })
+		remote:FireServer("dodge", { token = data.token, hits = result.hits, grazes = result.grazes, path = result.path })
 	elseif msg == "watchDodge" then
 		local c = findCrew(data.uid)
 		local p = BattleDefs.Patterns[data.pattern]

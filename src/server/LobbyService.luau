@@ -18,9 +18,8 @@ local Run = require(script.Parent.Run)
 local LobbyService = {}
 LobbyService.onJoin = nil -- function(player): a late joiner hopped into a sailing run
 
-local profiles = {} -- [Player] = { race, haki, classId, role, ready, bestBounty, joinedAt }
+local profiles = {} -- [Player] = { race, haki, classId, role, ready, bestBounty, joinedAt, receipts, noSave }
 local rng = Random.new()
-local forced = false
 
 local store = nil
 pcall(function()
@@ -29,34 +28,83 @@ end)
 
 local function load(player)
 	local data = nil
+	local loaded = true
 	if store then
-		local ok, res = pcall(function()
-			return store:GetAsync("u" .. player.UserId)
-		end)
-		if ok then
-			data = res
+		-- try 3 times (wait 1 s, then 2 s): a short DataStore hiccup shouldn't cost anyone their save
+		loaded = false
+		for attempt = 1, 3 do
+			local ok, res = pcall(function()
+				return store:GetAsync("u" .. player.UserId)
+			end)
+			if ok then
+				data, loaded = res, true
+				break
+			end
+			if attempt == 3 or not player.Parent then
+				break -- out of tries (or they already left)
+			end
+			task.wait(attempt)
 		end
 	end
 	data = type(data) == "table" and data or {}
+	-- purchase ids of rerolls already given (so a repeated receipt never rerolls twice)
+	local receipts = {}
+	if type(data.receipts) == "table" then
+		for _, id in data.receipts do
+			if type(id) == "string" then
+				table.insert(receipts, id)
+			end
+		end
+	end
 	return {
 		race = if CrewDefs.find(CrewDefs.Races, data.race) then data.race else CrewDefs.roll(CrewDefs.Races, rng),
 		haki = if CrewDefs.find(CrewDefs.Haki, data.haki) then data.haki else CrewDefs.roll(CrewDefs.Haki, rng),
 		classId = if ClassDefs.Classes[data.classId] then data.classId else "Warrior",
 		bestBounty = tonumber(data.bestBounty) or 0,
+		receipts = receipts,
+		noSave = not loaded, -- the save couldn't be read: never write these stand-in rolls over it
 		role = nil,
 		ready = false,
 		joinedAt = os.clock(),
 	}
 end
 
+-- returns true when the record was written
 local function save(player)
 	local p = profiles[player]
-	if not p or not store then
-		return
+	if not p or not store or p.noSave then
+		return false
 	end
-	pcall(function()
-		store:SetAsync("u" .. player.UserId, { race = p.race, haki = p.haki, classId = p.classId, bestBounty = p.bestBounty })
+	local ok = pcall(function()
+		store:SetAsync("u" .. player.UserId, { race = p.race, haki = p.haki, classId = p.classId, bestBounty = p.bestBounty, receipts = p.receipts })
 	end)
+	return ok
+end
+
+-- copy a sailing player's run bounty onto their Bounty Board record (m = their run member, if known)
+local function keepBounty(player, m)
+	local p = profiles[player]
+	m = m or (Run.current and Run.memberOf(Run.current, player))
+	if p and m then
+		p.bestBounty = math.max(p.bestBounty, tonumber(m.bounty) or 0)
+	end
+end
+-- Run calls this before it drops a leaving crewmate (the two PlayerRemoving handlers can run in either order)
+Run.onLeave = function(_, m)
+	keepBounty(m.player, m)
+end
+
+-- spam guard: each player gets at most 10 messages a second, the rest are ignored
+local msgCount = {} -- [Player] = { t = when this second started, n = messages in it }
+local function spam(player)
+	local now = os.clock()
+	local c = msgCount[player]
+	if not c or now - c.t >= 1 then
+		msgCount[player] = { t = now, n = 1 }
+		return false
+	end
+	c.n += 1
+	return c.n > 10
 end
 
 -- party = the first 6 players (by join time)
@@ -131,7 +179,8 @@ function LobbyService.broadcast()
 				crew = crew, you = { race = p.race, haki = p.haki, classId = p.classId, role = p.role, ready = p.ready },
 				captainId = cap and cap.UserId, dups = dups, missing = missing, runActive = runActive,
 				inRun = runActive and Run.memberOf(Run.current, plr) ~= nil, board = board,
-				rerollRace = Config.RerollRaceProduct ~= 0 or free, rerollHaki = Config.RerollHakiProduct ~= 0 or free, freeRerolls = free and Config.RerollRaceProduct == 0,
+				-- no rerolls for a player whose save didn't load (the new roll couldn't be kept)
+				rerollRace = (Config.RerollRaceProduct ~= 0 or free) and not p.noSave, rerollHaki = (Config.RerollHakiProduct ~= 0 or free) and not p.noSave, freeRerolls = free and Config.RerollRaceProduct == 0,
 			})
 		end
 	end
@@ -145,9 +194,11 @@ local function freeze(player, on)
 	end
 end
 
-local function tryStart()
+-- force = the Captain's Force Ready (skips "everyone Ready", never the one-of-each-role rule)
+local function tryStart(force)
 	local list = party()
-	if #list == 0 or (Run.current and Run.current.active) then
+	-- a run is still going (or on its end screen): nothing starts until it has fully ended
+	if #list == 0 or Run.current ~= nil then
 		return
 	end
 	local dups, missing = problems(list)
@@ -160,22 +211,24 @@ local function tryStart()
 			all = false
 		end
 	end
-	if not all and not forced then
+	if not all and not force then
 		return
 	end
-	forced = false
+	-- nothing from the checks to Run.start may wait (a save would let a 2nd click or a role change slip in)
 	local members = {}
 	for _, e in list do
 		e.p.ready = false
 		table.insert(members, { player = e.player, userId = e.player.UserId, name = e.player.DisplayName, classId = e.p.classId, race = e.p.race, haki = e.p.haki, role = e.p.role })
 		freeze(e.player, false)
-		save(e.player)
 	end
 	for _, e in list do
 		Remotes.Lobby:FireClient(e.player, "close")
 	end
 	Run.start(members)
 	LobbyService.broadcast()
+	for _, e in list do
+		task.spawn(save, e.player)
+	end
 end
 
 local function reroll(player, what)
@@ -202,16 +255,19 @@ local function reroll(player, what)
 	end
 	local def = CrewDefs.find(if what == "race" then CrewDefs.Races else CrewDefs.Haki, if what == "race" then p.race else p.haki)
 	Remotes.Lobby:FireClient(player, "rolled", { what = what, id = def.id, name = def.name, rare = def.rare })
-	save(player)
 	LobbyService.broadcast()
 end
 
 Remotes.Lobby.OnServerEvent:Connect(function(player, msg, data)
+	if spam(player) then
+		return
+	end
 	local p = profiles[player]
 	if not p then
 		return
 	end
-	local inRun = Run.current and Run.current.active and Run.memberOf(Run.current, player)
+	-- a run member stays locked until their run has fully ended (its end screen counts too)
+	local inRun = Run.current and Run.memberOf(Run.current, player)
 	if msg == "class" and type(data) == "string" and ClassDefs.Classes[data] and not inRun then
 		p.classId = data
 		p.ready = false
@@ -227,23 +283,29 @@ Remotes.Lobby.OnServerEvent:Connect(function(player, msg, data)
 		else
 			Remotes.toast(player, "Every crewmate needs a different role before you can Ready.")
 		end
-		tryStart()
+		tryStart(false)
 	elseif msg == "force" and not inRun then
-		if captainOf(party()) == player then
+		-- ignored while any run exists (tryStart would refuse it anyway)
+		if captainOf(party()) == player and Run.current == nil then
 			local dups, missing = problems(party())
 			if #dups > 0 or #missing > 0 then
 				Remotes.toast(player, "Even the Captain can't sail with two of the same role (or someone without a role).")
 			else
-				forced = true
-				tryStart()
+				tryStart(true)
 			end
 		end
 	elseif msg == "reroll" and (data == "race" or data == "haki") then
+		-- their real save never loaded: a paid reroll couldn't be kept, so don't sell one
+		if p.noSave then
+			Remotes.toast(player, "Your save didn't load, so rerolls are off until you rejoin.")
+			return
+		end
 		local product = if data == "race" then Config.RerollRaceProduct else Config.RerollHakiProduct
 		if product ~= 0 then
 			MarketplaceService:PromptProductPurchase(player, product)
 		elseif RunService:IsStudio() then
 			reroll(player, data) -- free while testing in Studio
+			save(player)
 		end
 		return
 	elseif msg == "hello" then
@@ -262,40 +324,58 @@ Remotes.Lobby.OnServerEvent:Connect(function(player, msg, data)
 				LobbyService.onJoin(player)
 			end
 		end
+	else
+		return -- unknown or bad message: nothing changed, so no broadcast
 	end
 	LobbyService.broadcast()
 end)
 
 MarketplaceService.ProcessReceipt = function(info)
 	local player = Players:GetPlayerByUserId(info.PlayerId)
-	if not player or not profiles[player] then
+	local p = player and profiles[player]
+	-- not loaded yet, or their save didn't load (we couldn't keep the reroll): Roblox asks again later
+	if not p or p.noSave then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
-	if info.ProductId == Config.RerollRaceProduct then
-		reroll(player, "race")
-	elseif info.ProductId == Config.RerollHakiProduct then
-		reroll(player, "haki")
+	local what = if info.ProductId == Config.RerollRaceProduct then "race" elseif info.ProductId == Config.RerollHakiProduct then "haki" else nil
+	if what and not table.find(p.receipts, info.PurchaseId) then
+		-- each receipt rerolls once; a retry of the same receipt only tries the save again
+		reroll(player, what)
+		table.insert(p.receipts, info.PurchaseId)
+		while #p.receipts > 50 do
+			table.remove(p.receipts, 1)
+		end
+	end
+	if what and not save(player) then
+		return Enum.ProductPurchaseDecision.NotProcessedYet -- only granted once the reroll is really saved
 	end
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 
 -- back to the lobby after a run
 function LobbyService.open(run)
+	-- no waiting in here until the lobby is open (a save would let a new run start halfway through)
 	for _, m in run.members do
 		local p = profiles[m.player]
 		if p then
 			p.bestBounty = math.max(p.bestBounty, m.bounty or 0)
 			p.ready = false
-			save(m.player)
 		end
 	end
+	local cur = Run.current
 	for plr in profiles do
-		if plr.Parent then
+		-- never pull a player out of a run that's sailing
+		if plr.Parent and not (cur and cur.active and Run.memberOf(cur, plr)) then
 			freeze(plr, true)
 			Remotes.Lobby:FireClient(plr, "open")
 		end
 	end
 	LobbyService.broadcast()
+	for _, m in run.members do
+		if profiles[m.player] then
+			task.spawn(save, m.player)
+		end
+	end
 end
 
 local function onCharacter(player, ch)
@@ -319,6 +399,9 @@ Players.PlayerAdded:Connect(function(player)
 		return
 	end
 	profiles[player] = profile
+	if profile.noSave then
+		Remotes.toast(player, "Your save didn't load, so nothing will be saved this time. Rejoin later to get it back.")
+	end
 	if player.Character then
 		task.spawn(onCharacter, player, player.Character)
 	end
@@ -332,6 +415,8 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	msgCount[player] = nil
+	keepBounty(player) -- a bounty from a run still going (or on its end screen) counts too
 	save(player)
 	profiles[player] = nil
 	LobbyService.broadcast()
@@ -339,6 +424,7 @@ end)
 
 game:BindToClose(function()
 	for plr in profiles do
+		keepBounty(plr)
 		save(plr)
 	end
 end)

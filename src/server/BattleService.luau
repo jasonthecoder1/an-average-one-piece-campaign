@@ -14,6 +14,7 @@ local BattleDefs = require(Shared.BattleDefs)
 local ClassDefs = require(Shared.ClassDefs)
 local CrewDefs = require(Shared.CrewDefs)
 local ActionCommandDefs = require(Shared.ActionCommandDefs)
+local DodgePatterns = require(Shared.DodgePatterns)
 local Remotes = require(script.Parent.Remotes)
 local Arena = require(script.Parent.Arena)
 local ItemDefs = require(Shared.ItemDefs)
@@ -236,6 +237,15 @@ local function healUnit(battle, healer, target, frac)
 	target.hp += amount
 	healer.stats.heals += amount
 	send(battle, "fx", { kind = "heal", dst = target.uid, amount = amount })
+end
+
+-- A knocked-out or departed crew member stops guarding their friend.
+local function dropBodyguard(battle, unit)
+	for _, other in battle.crew do
+		if other.statuses.bodyguard == unit.uid then
+			other.statuses.bodyguard = nil
+		end
+	end
 end
 
 local function rootOf(unit)
@@ -527,6 +537,10 @@ local function playerTurn(battle, unit)
 		if unit.player and unit.player.Parent then
 			reply = ask(battle, unit, "choose", { uid = unit.uid, moves = list, seconds = BattleDefs.TurnSeconds }, BattleDefs.TurnSeconds + 1)
 		end
+		-- left (or the fight ended) while picking: no auto attack for them
+		if battle.over or not alive(unit) then
+			return
+		end
 		local move, targetUid, partId, auto
 		if type(reply) == "table" and type(reply.moveId) == "string" then
 			local entry = findMove(list, reply.moveId)
@@ -592,6 +606,162 @@ local function pickTarget(battle)
 	return target
 end
 
+-- ===== dodge box check =====
+-- The client sends its heart path (where the heart was every 0.05 s of box time). We check the heart could really
+-- have moved like that, rebuild the same bullets from our seed (Shared/DodgePatterns) and count hits and grazes.
+
+local finite = ActionCommandDefs.finite
+
+local function outOfBox(x, y)
+	return x < -0.15 or x > 1.15 or y < -0.15 or y > 1.15
+end
+
+-- A clean copy of the client's path, or nil when it's missing, broken or impossible.
+local function cleanDodgePath(raw, duration, speed, dashLen)
+	if type(raw) ~= "table" then
+		return nil
+	end
+	local n = #raw
+	if n < 2 or n > DodgePatterns.MAX_SAMPLES then
+		return nil
+	end
+	local path = {}
+	for i = 1, n do
+		local s = raw[i]
+		if type(s) ~= "table" or not (finite(s.t) and finite(s.x) and finite(s.y)) or type(s.dash) ~= "boolean" then
+			return nil
+		end
+		-- the heart is kept inside the box edges
+		local lo, hi = DodgePatterns.HEART_R - 0.001, 1 - DodgePatterns.HEART_R + 0.001
+		if s.x < lo or s.x > hi or s.y < lo or s.y > hi then
+			return nil
+		end
+		-- starts at the start point at 0 s, then a sample every 0.05-0.1 s (sparser would let bullets slip
+		-- between the samples; the client's box clock never leaves a gap over 0.101 s)
+		if i == 1 then
+			if s.t ~= 0 or math.abs(s.x - DodgePatterns.START_X) > 0.001 or math.abs(s.y - DodgePatterns.START_Y) > 0.001 then
+				return nil
+			end
+		else
+			local gap = s.t - path[i - 1].t
+			if gap < 0.045 or gap > 0.12 then
+				return nil
+			end
+		end
+		path[i] = { t = s.t, x = s.x, y = s.y, dash = s.dash }
+	end
+	-- and it has to last the whole box (the client's last sample is always within 0.101 s of the end)
+	if path[n].t > duration + 0.05 or path[n].t < duration - 0.12 then
+		return nil
+	end
+	-- dashes: each lasts dashLen at most, and the next one only starts after the cooldown
+	local runStart, lastStart = nil, -math.huge
+	for _, s in path do
+		if not s.dash then
+			runStart = nil
+		elseif runStart == nil then
+			if s.t - lastStart < DodgePatterns.DASH_COOLDOWN - 0.2 then
+				return nil
+			end
+			runStart, lastStart = s.t, s.t
+		elseif s.t - runStart > dashLen + 0.02 then
+			return nil
+		end
+	end
+	-- speed: never faster than the heart can go (dash speed only around a dash; tiny slack for the rounding)
+	for i = 2, n do
+		local a, b = path[i - 1], path[i]
+		local dashing = false
+		for j = math.max(1, i - 2), math.min(n, i + 1) do
+			if path[j].dash then
+				dashing = true
+				break
+			end
+		end
+		local limit = speed * (if dashing then DodgePatterns.DASH_SPEED else 1) * (b.t - a.t + 0.0015) + 0.002
+		local dx, dy = b.x - a.x, b.y - a.y
+		if dx * dx + dy * dy > limit * limit then
+			return nil
+		end
+	end
+	return path
+end
+
+-- Replays the bullets against a clean path and returns the hits and grazes we count ourselves.
+-- Hits are only checked on the samples, with a slightly smaller heart, so an honest client is never charged more
+-- than it saw. Grazes look at the whole stretch between samples with a slightly wider band, so an honest client
+-- never gets fewer than it saw. The caller takes the higher hits and the lower grazes of the two.
+local function replayDodge(bullets, path, duration, speed, blind)
+	local HEART_R = DodgePatterns.HEART_R
+	local TOL = 0.002 -- covers the rounding to 3 decimals
+	for _, b in bullets do
+		if b.aim then
+			DodgePatterns.aim(b, path, blind)
+		end
+	end
+	-- hits: on each sample (i-frames after a hit, nothing while dashing)
+	local hits, lastHit = 0, -math.huge
+	for _, s in path do
+		for _, b in bullets do
+			if b.t > s.t then
+				break -- sorted by spawn time: the rest aren't out yet
+			end
+			local bx, by = b.x + b.vx * (s.t - b.t), b.y + b.vy * (s.t - b.t)
+			if outOfBox(bx, by) then
+				continue
+			end
+			local dx, dy = bx - s.x, by - s.y
+			local reach = b.r + HEART_R - TOL
+			if dx * dx + dy * dy < reach * reach then
+				b.touched = true
+				if not s.dash and s.t - lastHit >= DodgePatterns.HIT_IFRAMES + TOL then
+					hits += 1
+					lastHit = s.t
+				end
+			end
+		end
+	end
+	-- grazes: the bullet came into the graze band somewhere and never touched the heart
+	local grazes = 0
+	local n = #path
+	for _, b in bullets do
+		if b.touched then
+			continue
+		end
+		for i = 1, n do
+			local a, nb = path[i], path[i + 1]
+			local t0, t1 = math.max(a.t, b.t), if nb then nb.t else duration
+			if t1 <= t0 then
+				continue
+			end
+			local bx, by = b.x + b.vx * (t0 - b.t), b.y + b.vy * (t0 - b.t)
+			if outOfBox(bx, by) then
+				break -- it flew off and never comes back
+			end
+			-- the heart goes in a straight line between samples, but may bend off it by half its travel;
+			-- after the last sample it may be anywhere it can reach before the box ends
+			local span = t1 - a.t
+			local hvx, hvy, wiggle = 0, 0, speed * span
+			if nb then
+				hvx, hvy = (nb.x - a.x) / span, (nb.y - a.y) / span
+				wiggle = 0.5 * speed * (if a.dash or nb.dash then DodgePatterns.DASH_SPEED else 1) * span
+			end
+			-- closest the bullet gets to the heart between t0 and t1
+			local px, py = bx - (a.x + hvx * (t0 - a.t)), by - (a.y + hvy * (t0 - a.t))
+			local vx, vy = b.vx - hvx, b.vy - hvy
+			local vv = vx * vx + vy * vy
+			local tau = if vv > 0 then math.clamp(-(px * vx + py * vy) / vv, 0, t1 - t0) else 0
+			local cx, cy = px + vx * tau, py + vy * tau
+			local band = b.r + HEART_R + DodgePatterns.GRAZE_PAD + TOL + wiggle
+			if cx * cx + cy * cy < band * band then
+				grazes += 1
+				break
+			end
+		end
+	end
+	return hits, grazes
+end
+
 local function enemyTurn(battle, e)
 	local target = pickTarget(battle)
 	if not target then
@@ -630,18 +800,24 @@ local function enemyTurn(battle, e)
 			pattern = pattern.id, seed = seed, mods = mods, maxHits = maxHits, damagePerHit = math.floor(dph * target.takenMult + 0.5),
 			heartSpeed = target.heartSpeed, dashMult = target.kit.mods.dashMult, observation = target.haki == "Observation",
 			enemy = e.name, enraged = enraged, density = pattern.density,
-		}, pattern.duration + 4)
+		}, pattern.duration * 1.5 + 4) -- box time pauses on lag spikes, so a slow device may take a bit longer
 	end
-	-- clamp the client's report
+	-- check the client's report: rebuild the bullets and replay its heart path
 	local fallback = math.ceil(maxHits / 2)
 	local hits, grazes = fallback, 0
-	if type(reply) == "table" and ActionCommandDefs.finite(reply.hits) then
-		hits = math.clamp(math.floor(reply.hits), 0, maxHits)
-		if elapsed < pattern.duration - 0.6 then
-			hits = math.max(hits, fallback) -- answered before the box could have finished
-		end
-		if ActionCommandDefs.finite(reply.grazes) then
-			grazes = math.clamp(math.floor(reply.grazes), 0, BattleDefs.MaxGraze)
+	if type(reply) == "table" and finite(reply.hits) then
+		local clientHits = math.clamp(math.floor(reply.hits), 0, maxHits)
+		local clientGrazes = if finite(reply.grazes) then math.clamp(math.floor(reply.grazes), 0, BattleDefs.MaxGraze) else 0
+		local speed = DodgePatterns.SPEED * (target.heartSpeed or 1)
+		local path = cleanDodgePath(reply.path, pattern.duration, speed, DodgePatterns.DASH_TIME * (target.kit.mods.dashMult or 1))
+		if path and elapsed >= pattern.duration - 0.6 then
+			local bullets = DodgePatterns.build(pattern, seed, mods, pattern.density)
+			local serverHits, serverGrazes = replayDodge(bullets, path, pattern.duration, speed, mods.blind)
+			hits = math.clamp(math.max(clientHits, serverHits), 0, maxHits)
+			grazes = math.max(0, math.min(clientGrazes, serverGrazes, #bullets - hits, BattleDefs.MaxGraze))
+		else
+			-- no proof (no good path, or answered before the box could have finished): the old fallback, no grazes
+			hits = math.max(clientHits, fallback)
 		end
 	end
 	local guard = target.statuses.guard
@@ -671,7 +847,7 @@ local function enemyTurn(battle, e)
 	if hits == 0 then
 		send(battle, "fx", { kind = "stamp", text = "PERFECT!" })
 	end
-	if guard and guard.counter and alive(e) then
+	if guard and guard.counter and target.hp > 0 and alive(e) then -- a knocked-out parry can't hit back
 		local c = battle.rng:NextInteger(guard.counter[1], guard.counter[2])
 		e.hp -= c
 		target.stats.damage += c
@@ -682,6 +858,7 @@ local function enemyTurn(battle, e)
 	end
 	if target.hp <= 0 then
 		target.statuses = {}
+		dropBodyguard(battle, target)
 		log(battle, target.name .. " is knocked out!")
 		local r = rootOf(target)
 		if r then
@@ -860,6 +1037,7 @@ function BattleService.fight(run, enemyIds, opts)
 						killEnemy(battle, u, nil)
 					else
 						u.hp = 0
+						dropBodyguard(battle, u)
 					end
 					pushState(battle)
 					if checkEnd(battle) then
@@ -867,6 +1045,19 @@ function BattleService.fight(run, enemyIds, opts)
 					end
 					continue
 				end
+			end
+			if u.side == "crew" then
+				-- (before the stun check: a stunned turn still counts as one of your turns)
+				u.statuses.smoke = nil
+				-- Taunt (and its Shield) wears off after 2 of your turns; your Bodyguard ends on your turn
+				if u.statuses.taunt then
+					u.statuses.taunt -= 1
+					if u.statuses.taunt <= 0 then
+						u.statuses.taunt = nil
+						u.shield = 0
+					end
+				end
+				dropBodyguard(battle, u)
 			end
 			if u.statuses.down or u.statuses.stun then
 				log(battle, u.name .. (if u.statuses.down then " is DOWN and loses its turn." else " is stunned!"))
@@ -877,20 +1068,6 @@ function BattleService.fight(run, enemyIds, opts)
 				continue
 			end
 			if u.side == "crew" then
-				u.statuses.smoke = nil
-				-- Taunt (and its Shield) wears off after 2 of your turns; your Bodyguard ends on your turn
-				if u.statuses.taunt then
-					u.statuses.taunt -= 1
-					if u.statuses.taunt <= 0 then
-						u.statuses.taunt = nil
-						u.shield = 0
-					end
-				end
-				for _, other in battle.crew do
-					if other.statuses.bodyguard == u.uid then
-						other.statuses.bodyguard = nil
-					end
-				end
 				if u.turnsTaken > 0 then
 					u.stamina = math.min(BattleDefs.Stamina.max, u.stamina + BattleDefs.Stamina.perTurn + u.grazeBonus)
 				end
@@ -977,10 +1154,13 @@ Players.PlayerRemoving:Connect(function(player)
 		for _, u in battle.crew do
 			if u.player == player then
 				u.gone = true
+				dropBodyguard(battle, u)
 			end
 		end
 		battleOf[player] = nil
-		checkEnd(battle)
+		if not checkEnd(battle) then
+			pushState(battle) -- their friend's GUARDED tag goes away
+		end
 	end
 end)
 
