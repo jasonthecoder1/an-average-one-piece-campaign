@@ -361,6 +361,8 @@ task.spawn(function()
 		if root and refs.timer then
 			if c and c.state == "vote" and c.deadlineAt then
 				refs.timer.Text = "VOTE ENDS IN " .. math.max(0, math.ceil(c.deadlineAt - os.clock()))
+			elseif c and c.state == "ship" and c.readyAt then
+				refs.timer.Text = "SETTING SAIL IN " .. math.max(0, math.ceil(c.readyAt - os.clock()))
 			else
 				refs.timer.Text = ""
 			end
@@ -375,6 +377,9 @@ function MapUI.init()
 			MapUI.chart = data
 			if data.deadline then
 				data.deadlineAt = os.clock() + data.deadline
+			end
+			if data.readyDeadline then
+				data.readyAt = os.clock() + data.readyDeadline -- the ship sails without the stragglers then
 			end
 			hudSea.Text = "SEA " .. data.sea .. " · " .. string.upper(data.seaName)
 			hudGold.Text = "GOLD " .. data.gold .. "   ·   POWER " .. data.power

@@ -1037,7 +1037,9 @@ function BattleService.fight(run, enemyIds, opts)
 						killEnemy(battle, u, nil)
 					else
 						u.hp = 0
+						u.statuses = {} -- knocked out by poison: clear the tags like any other KO
 						dropBodyguard(battle, u)
+						log(battle, u.name .. " is knocked out by poison!")
 					end
 					pushState(battle)
 					if checkEnd(battle) then

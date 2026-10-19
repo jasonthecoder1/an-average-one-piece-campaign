@@ -472,7 +472,7 @@ local function onStation(player, m, run, name)
 		end
 		Remotes.toast(nil, m.name .. " (Cook) hands out snacks: everyone heals 10%.")
 	elseif name == "Stage" then
-		run.mealBonus = (run.mealBonus or 0) + 0.03
+		run.mealBonus = 0.03 -- one song per visit; it does not stack across stops without a fight
 		Remotes.toast(nil, m.name .. " (Musician) plays a sea shanty: +3% crew damage next fight.")
 	elseif name == "Study" then
 		local mats = { "Driftwood", "Iron Plate", "Cloth Strip" }

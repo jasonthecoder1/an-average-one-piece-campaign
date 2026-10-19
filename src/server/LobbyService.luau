@@ -384,7 +384,10 @@ local function onCharacter(player, ch)
 		local root = ch:WaitForChild("HumanoidRootPart", 5)
 		if root then
 			task.wait()
-			root.Anchored = true -- the lobby is a menu: no walking
+			-- check again after the wait: they may have joined the crew meanwhile
+			if not (Run.current and Run.current.active and Run.memberOf(Run.current, player)) then
+				root.Anchored = true -- the lobby is a menu: no walking
+			end
 		end
 	end
 end

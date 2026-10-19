@@ -460,7 +460,20 @@ function Run.start(list)
 	run.at = run.map.start
 	run.visited = { run.at }
 	Run.current = run
-	task.spawn(loop, run)
+	task.spawn(function()
+		-- if the loop ever errors, free the lobby instead of leaving a dead run in Run.current forever
+		local ok, err = pcall(loop, run)
+		if not ok then
+			warn("[Run] the run loop crashed: " .. tostring(err))
+			run.active = false
+			if Run.current == run then
+				Run.current = nil
+				if Run.onEnd then
+					Run.onEnd(run, false)
+				end
+			end
+		end
+	end)
 	return run
 end
 

@@ -37,8 +37,9 @@ BattleDefs.Status = {
 	bodyguard = { label = "GUARDED" },
 }
 
--- Dodge-box patterns. `gen` names the client generator (DodgeBox.luau). The server only uses the numbers:
--- it clamps the reported hits to maxHits (x stagger keep) and grazes to maxGraze. stunAt = this many hits STUNS you.
+-- Dodge-box patterns. `gen` names the bullet generator in Shared/DodgePatterns.luau. Client and server build the
+-- same bullets from one seed; the server replays the heart path the client sends to check its hits and grazes
+-- (then clamps to maxHits x stagger keep and maxGraze). stunAt = this many hits STUNS you.
 BattleDefs.Patterns = {
 	CannonBarrage = { id = "CannonBarrage", label = "CANNON BARRAGE", gen = "rain", duration = 6, damagePerHit = 7, maxHits = 8, density = 1.0 },
 	SwordWaves = { id = "SwordWaves", label = "SWORD WAVES", gen = "waves", duration = 6.5, damagePerHit = 8, maxHits = 7, density = 1.0 },
