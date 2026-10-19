@@ -156,6 +156,7 @@ local function buildScreen()
 		gui:Destroy()
 	end
 	gui = Kit.screen("BattleScreen", 10, player:WaitForChild("PlayerGui"))
+	Kit.autoScale(gui, 1280, 720)
 	ui = {} :: { [string]: any }
 	buildTop()
 	buildBottom()

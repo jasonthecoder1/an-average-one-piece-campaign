@@ -315,4 +315,18 @@ function Kit.commas(n)
 	return out
 end
 
+-- Shrinks a whole screen on small (phone) screens so the 6 crew cards and the command tiles still fit.
+function Kit.autoScale(gui, designW, designH)
+	local s = Instance.new("UIScale")
+	s.Parent = gui
+	local cam = workspace.CurrentCamera
+	local function update()
+		local v = cam.ViewportSize
+		s.Scale = math.clamp(math.min(v.X / (designW or 1280), v.Y / (designH or 720)), 0.5, 1.15)
+	end
+	update()
+	cam:GetPropertyChangedSignal("ViewportSize"):Connect(update)
+	return s
+end
+
 return Kit
