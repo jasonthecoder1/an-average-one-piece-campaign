@@ -5,11 +5,12 @@ local Kit = require(script.Parent.Kit)
 local BattleUI = require(script.Parent.BattleUI)
 local MapUI = require(script.Parent.MapUI)
 local ShipUI = require(script.Parent.ShipUI)
+local LobbyUI = require(script.Parent.LobbyUI)
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes")
 
 local function blocked()
-	return BattleUI.active()
+	return BattleUI.active() or LobbyUI.active()
 end
 
 BattleUI.init()
@@ -18,6 +19,7 @@ ShipUI.blocked = blocked
 ShipUI.openChart = MapUI.open
 MapUI.init()
 ShipUI.init()
+LobbyUI.init()
 
 -- hide the ship HUDs while a fight (or another full screen) is up
 task.spawn(function()
