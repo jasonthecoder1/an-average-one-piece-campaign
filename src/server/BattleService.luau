@@ -62,6 +62,9 @@ local function statusList(u)
 	if u.rage and u.rage >= BattleDefs.RageMax then
 		table.insert(out, "ENRAGED")
 	end
+	if (u.shield or 0) > 0 then
+		table.insert(out, "SHIELD " .. u.shield)
+	end
 	table.sort(out)
 	return out
 end
@@ -218,6 +221,23 @@ local function enemyByUid(battle, uid)
 	return nil
 end
 
+local function crewByUid(battle, uid)
+	for _, u in battle.crew do
+		if u.uid == uid then
+			return u
+		end
+	end
+	return nil
+end
+
+local function healUnit(battle, healer, target, frac)
+	local amount = math.max(1, math.floor(target.maxHp * frac + 0.5))
+	amount = math.min(amount, target.maxHp - target.hp)
+	target.hp += amount
+	healer.stats.heals += amount
+	send(battle, "fx", { kind = "heal", dst = target.uid, amount = amount })
+end
+
 local function rootOf(unit)
 	if unit.side == "enemy" then
 		return unit.model and unit.model.PrimaryPart
@@ -311,6 +331,11 @@ local function hitEnemy(battle, attacker, move, target, partId, qteMult, missed)
 		if move.poison then
 			target.statuses.poison = { turns = move.poison.turns, dmg = move.poison.dmg }
 		end
+		if move.stunChance and target.def.rank ~= "boss" and target.hp > 0 and rng:NextNumber() < move.stunChance then
+			target.statuses.stun = true
+			attacker.stats.downs += 1
+			log(battle, target.name .. " is STUNNED!")
+		end
 	end
 	send(battle, "fx", { kind = "hit", src = attacker.uid, dst = target.uid, amount = dmg, missed = missed, down = knocked, part = partId })
 	if target.hp <= 0 and not target.dead then
@@ -363,14 +388,70 @@ local function doMove(battle, unit, move, targetUid, partId, auto)
 		unit.statuses.smoke = true
 		send(battle, "fx", { kind = "buff", uid = unit.uid, text = "SMOKE!" })
 		return "done"
+	elseif move.kind == "stance" then
+		unit.shield = math.floor(unit.maxHp * move.shield + 0.5)
+		unit.statuses.taunt = move.taunt
+		unit.stats.blocks += 1
+		send(battle, "fx", { kind = "buff", uid = unit.uid, text = "TAUNT! +" .. unit.shield .. " SHIELD" })
+		return "done"
+	elseif move.kind == "bodyguard" then
+		local ally = crewByUid(battle, targetUid)
+		if ally and alive(ally) and ally ~= unit then
+			ally.statuses.bodyguard = unit.uid
+			unit.stats.blocks += 1
+			send(battle, "fx", { kind = "buff", uid = ally.uid, text = "GUARDED" })
+		end
+		return "done"
+	elseif move.kind == "heal" then
+		local res = if move.qte and not auto then runQte(battle, unit, move.qte) else { grade = "good", mult = 1 }
+		local mult = res.mult
+		if unit.kit.mods.healFloor and mult < 1 then
+			mult = 1 -- Calm Hands
+		end
+		local targets = {}
+		if move.target == "allAllies" then
+			for _, u in battle.crew do
+				if alive(u) then
+					table.insert(targets, u)
+				end
+			end
+		else
+			local ally = crewByUid(battle, targetUid)
+			table.insert(targets, if ally and alive(ally) then ally else unit)
+		end
+		for _, t in targets do
+			healUnit(battle, unit, t, move.heal * mult * (unit.kit.mods.moveMult[move.id] or 1))
+			if move.cleanse then
+				t.statuses.poison, t.statuses.stun = nil, nil
+			end
+		end
+		pushState(battle)
+		return "done"
+	elseif move.kind == "wake" then
+		local ally = crewByUid(battle, targetUid)
+		if ally and alive(ally) and ally.statuses.stun then
+			ally.statuses.stun = nil
+			send(battle, "fx", { kind = "buff", uid = ally.uid, text = "AWAKE!" })
+		else
+			sendTo(unit, "log", "Nobody there needs waking up.")
+		end
+		pushState(battle)
+		return "free"
 	end
 
 	-- attacks
 	local targets = {}
-	if move.target == "allEnemies" then
+	if move.target == "allEnemies" or move.target == "frontRow" then
 		for _, e in battle.enemies do
-			if alive(e) then
+			if alive(e) and (move.target == "allEnemies" or e.slot <= 3) then
 				table.insert(targets, e)
+			end
+		end
+		if #targets == 0 then -- the front row is gone: hit whoever is left
+			for _, e in battle.enemies do
+				if alive(e) then
+					table.insert(targets, e)
+				end
 			end
 		end
 	else
@@ -402,12 +483,23 @@ local function doMove(battle, unit, move, targetUid, partId, auto)
 	for hit = 1, move.hits or 1 do
 		for _, t in targets do
 			if alive(t) then
-				local _, down = hitEnemy(battle, unit, move, t, if move.target == "allEnemies" then "Core" else partId, res.mult, res.missed)
+				local _, down = hitEnemy(battle, unit, move, t, if move.target == "enemy" then partId else "Core", res.mult, res.missed)
 				gotDown = gotDown or down
 			end
 		end
 		if hit < (move.hits or 1) then
 			task.wait(0.25)
+		end
+	end
+	if move.healLowest and not res.missed then
+		local low, lowFrac = nil, 2
+		for _, u in battle.crew do
+			if alive(u) and u.hp / u.maxHp < lowFrac then
+				low, lowFrac = u, u.hp / u.maxHp
+			end
+		end
+		if low then
+			healUnit(battle, unit, low, move.healLowest)
 		end
 	end
 	if move.kind == "rush" then
@@ -469,20 +561,33 @@ local function playerTurn(battle, unit)
 end
 
 local function pickTarget(battle)
-	local open, all = {}, {}
+	local open, all, taunting = {}, {}, {}
 	for _, u in battle.crew do
 		if alive(u) then
 			table.insert(all, u)
 			if not u.statuses.smoke then
 				table.insert(open, u)
+				if u.statuses.taunt then
+					table.insert(taunting, u)
+				end
 			end
 		end
 	end
-	local pool = if #open > 0 then open else all
+	local pool = if #taunting > 0 then taunting elseif #open > 0 then open else all
 	if #pool == 0 then
 		return nil
 	end
-	return pool[battle.rng:NextInteger(1, #pool)]
+	local target = pool[battle.rng:NextInteger(1, #pool)]
+	-- Bodyguard: the Tank jumps in front of the friend they're guarding
+	local guardUid = target.statuses.bodyguard
+	if guardUid then
+		local guardian = crewByUid(battle, guardUid)
+		if guardian and alive(guardian) then
+			log(battle, guardian.name .. " jumps in front of " .. target.name .. "!")
+			target = guardian
+		end
+	end
+	return target
 end
 
 local function enemyTurn(battle, e)
@@ -544,8 +649,19 @@ local function enemyTurn(battle, e)
 		target.statuses.guard = nil
 	end
 	dmg = math.floor(dmg + 0.5)
+	if (target.shield or 0) > 0 and dmg > 0 then
+		local absorbed = math.min(target.shield, dmg)
+		target.shield -= absorbed
+		dmg -= absorbed
+		send(battle, "fx", { kind = "buff", uid = target.uid, text = "SHIELD -" .. absorbed })
+	end
 	target.hp = math.max(0, target.hp - dmg)
 	target.stats.grazes += grazes
+	-- heavy patterns STUN on 3+ hits (stun resist can shrug it off)
+	if pattern.stunAt and hits >= pattern.stunAt and target.hp > 0 and battle.rng:NextNumber() >= (target.kit.mods.stunResist or 0) then
+		target.statuses.stun = true
+		log(battle, target.name .. " is STUNNED!")
+	end
 	if grazes >= BattleDefs.GrazeForStamina then
 		target.grazeBonus = 1
 	end
@@ -591,7 +707,7 @@ local function makeCrewUnit(battle, member, slot)
 		maxHp = maxHp, hp = hp, stamina = BattleDefs.Stamina.start, speed = kit.class.speed * (rm.speedMult or 1),
 		dmgMult = dmgMult, takenMult = rm.takenMult or 1, heartSpeed = rm.heartSpeed or 1,
 		statuses = {}, acted = false, turnsTaken = 0, grazeBonus = 0,
-		stats = { damage = 0, downs = 0, kos = 0, grazes = 0, blocks = 0 },
+		stats = { damage = 0, downs = 0, kos = 0, grazes = 0, blocks = 0, heals = 0 }, shield = 0,
 	}
 end
 
@@ -753,6 +869,19 @@ function BattleService.fight(run, enemyIds, opts)
 			end
 			if u.side == "crew" then
 				u.statuses.smoke = nil
+				-- Taunt (and its Shield) wears off after 2 of your turns; your Bodyguard ends on your turn
+				if u.statuses.taunt then
+					u.statuses.taunt -= 1
+					if u.statuses.taunt <= 0 then
+						u.statuses.taunt = nil
+						u.shield = 0
+					end
+				end
+				for _, other in battle.crew do
+					if other.statuses.bodyguard == u.uid then
+						other.statuses.bodyguard = nil
+					end
+				end
 				if u.turnsTaken > 0 then
 					u.stamina = math.min(BattleDefs.Stamina.max, u.stamina + BattleDefs.Stamina.perTurn + u.grazeBonus)
 				end
@@ -790,7 +919,7 @@ function BattleService.fight(run, enemyIds, opts)
 	local doctor = roleHolder(battle, "Doctor")
 	for _, u in battle.crew do
 		local s = u.stats
-		local gain = s.damage * 1000 + s.downs * 15000 + s.kos * 25000 + s.grazes * 500 + s.blocks * 8000
+		local gain = s.damage * 1000 + s.downs * 15000 + s.kos * 25000 + s.grazes * 500 + s.blocks * 8000 + s.heals * 800
 		if not battle.won then
 			gain = math.floor(gain / 4)
 		end

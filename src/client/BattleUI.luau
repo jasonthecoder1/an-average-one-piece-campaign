@@ -229,6 +229,11 @@ local function crewCard(c)
 	local _, setHp = Kit.bar({ Size = UDim2.new(1, -12, 0, 8), Position = UDim2.fromOffset(6, 66), Color = Style.Red, ZIndex = 7, Parent = f })
 	local _, setSt = Kit.bar({ Size = UDim2.new(1, -12, 0, 6), Position = UDim2.fromOffset(6, 78), Color = Style.Cyan, ZIndex = 7, Parent = f, Thickness = 1 })
 	local status = Kit.label({ Text = "", Font = Style.Body, TextSize = 10, Color = Style.Cyan, Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 0, -16), ZIndex = 7, Parent = f, Outline = 1.5 })
+	-- clicking a card picks that friend (heals, Bodyguard, Smelling Salts)
+	local hit = new("TextButton", { Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 9, Parent = f })
+	hit.Activated:Connect(function()
+		BattleUI.pickAlly(c.uid)
+	end)
 	return { frame = f, stroke = st, num = num, setHp = setHp, setSt = setSt, stam = stam, status = status }
 end
 
@@ -352,7 +357,7 @@ local function showParts(enemy)
 end
 
 function BattleUI.pickTarget(uid)
-	if not pick or not choosing then
+	if not pick or not choosing or pick.ally then
 		return
 	end
 	local e = findEnemy(uid)
@@ -366,6 +371,21 @@ function BattleUI.pickTarget(uid)
 	else
 		sendAction(pick.move.id, uid, "Core")
 	end
+end
+
+function BattleUI.pickAlly(uid)
+	if not pick or not pick.ally or not choosing then
+		return
+	end
+	local c = findCrew(uid)
+	if not c or c.ko or c.gone then
+		return
+	end
+	if pick.move.id == "Bodyguard" and c.userId == player.UserId then
+		ui.pick.Text = "PICK A DIFFERENT FRIEND"
+		return
+	end
+	sendAction(pick.move.id, uid, nil)
 end
 
 function BattleUI.cancelPick()
@@ -385,6 +405,13 @@ local function chooseMove(m)
 		return
 	end
 	ui.list.Visible = false
+	if m.target == "ally" then
+		pick = { move = m, ally = true }
+		ui.cmd.Visible = false
+		ui.back.Visible = true
+		ui.pick.Text = "PICK A FRIEND (click their card)"
+		return
+	end
 	if m.target == "enemy" then
 		pick = { move = m }
 		ui.cmd.Visible = false
@@ -641,6 +668,8 @@ local function onMessage(msg, data, extra)
 			elseif label ~= "" then
 				popup(data.uid, label, if data.grade == "miss" then Style.Muted else Style.Cream)
 			end
+		elseif data.kind == "heal" then
+			popup(data.dst, "+" .. data.amount, Color3.fromRGB(120, 235, 120), data.amount >= 25)
 		elseif data.kind == "buff" then
 			popup(data.uid, data.text, Style.Cyan)
 		elseif data.kind == "stamp" then

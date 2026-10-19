@@ -33,18 +33,20 @@ BattleDefs.Status = {
 	smoke = { label = "HIDDEN" },
 	guard = { label = "PARRY" },
 	marked = { label = "MARKED" },
+	taunt = { label = "TAUNT" },
+	bodyguard = { label = "GUARDED" },
 }
 
 -- Dodge-box patterns. `gen` names the client generator (DodgeBox.luau). The server only uses the numbers:
--- it clamps the reported hits to maxHits (x stagger keep) and grazes to maxGraze.
+-- it clamps the reported hits to maxHits (x stagger keep) and grazes to maxGraze. stunAt = this many hits STUNS you.
 BattleDefs.Patterns = {
 	CannonBarrage = { id = "CannonBarrage", label = "CANNON BARRAGE", gen = "rain", duration = 6, damagePerHit = 7, maxHits = 8, density = 1.0 },
 	SwordWaves = { id = "SwordWaves", label = "SWORD WAVES", gen = "waves", duration = 6.5, damagePerHit = 8, maxHits = 7, density = 1.0 },
 	PistolVolley = { id = "PistolVolley", label = "PISTOL VOLLEY", gen = "aimed", duration = 6, damagePerHit = 6, maxHits = 9, density = 1.0 },
-	FishmanKarate = { id = "FishmanKarate", label = "FISHMAN KARATE", gen = "burst", duration = 6.5, damagePerHit = 8, maxHits = 8, density = 1.0 },
+	FishmanKarate = { id = "FishmanKarate", label = "FISHMAN KARATE", gen = "burst", duration = 6.5, damagePerHit = 8, maxHits = 8, density = 1.0, stunAt = 3 },
 	-- harder versions for elites and bosses
-	SharkStorm = { id = "SharkStorm", label = "SHARK STORM", gen = "burst", duration = 7.5, damagePerHit = 10, maxHits = 10, density = 1.6 },
-	GrandBarrage = { id = "GrandBarrage", label = "GRAND BARRAGE", gen = "rain", duration = 7.5, damagePerHit = 10, maxHits = 10, density = 1.7 },
+	SharkStorm = { id = "SharkStorm", label = "SHARK STORM", gen = "burst", duration = 7.5, damagePerHit = 10, maxHits = 10, density = 1.6, stunAt = 3 },
+	GrandBarrage = { id = "GrandBarrage", label = "GRAND BARRAGE", gen = "rain", duration = 7.5, damagePerHit = 10, maxHits = 10, density = 1.7, stunAt = 3 },
 	BlackBlade = { id = "BlackBlade", label = "BLACK BLADE", gen = "waves", duration = 7.5, damagePerHit = 12, maxHits = 9, density = 1.6 },
 	HeadHunt = { id = "HeadHunt", label = "HEAD HUNT", gen = "aimed", duration = 7, damagePerHit = 9, maxHits = 11, density = 1.6 },
 }

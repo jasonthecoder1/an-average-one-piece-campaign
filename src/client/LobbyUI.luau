@@ -78,7 +78,7 @@ local function openChooser(kind)
 			local c = ClassDefs.Classes[id]
 			table.insert(options, { id = id, name = c.name, desc = c.role .. ". " .. c.hp .. " HP, speed " .. c.speed .. ". Moves: " .. ClassDefs.Moves[c.basic].label .. ", " .. ClassDefs.Moves[c.signature].label .. " + Tier 1 tree.", ok = true })
 		end
-		for _, name in { "Tank", "Healer", "Marksman", "Brawler", "Beast Tamer", "Weather Mage", "Bard" } do
+		for _, name in { "Marksman", "Brawler", "Beast Tamer", "Weather Mage", "Bard" } do
 			table.insert(options, { id = name, name = name, desc = "Coming soon.", ok = false })
 		end
 	else
