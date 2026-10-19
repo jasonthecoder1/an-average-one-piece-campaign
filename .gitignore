@@ -1,0 +1,4 @@
+*.rbxl
+*.rbxlx
+build/
+sourcemap.json
