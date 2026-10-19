@@ -46,8 +46,21 @@ local function setCamera(on)
 		local t0 = os.clock()
 		camConn = RunService.RenderStepped:Connect(function()
 			local t = os.clock() - t0
+			-- the ship map can set the shot with a part named LobbyCamera (front face = where it looks);
+			-- otherwise slowly swing around the ship
+			local ship = workspace:FindFirstChild("Ship")
+			local marker = ship and ship:FindFirstChild("LobbyCamera", true)
+			if marker and marker:IsA("BasePart") then
+				cam.CFrame = marker.CFrame * CFrame.new(math.sin(t * 0.2) * 1.5, math.sin(t * 0.13) * 0.6, 0)
+				return
+			end
+			local center = if ship and ship:IsA("Model") then ship:GetPivot().Position else Vector3.new(0, 10, 0)
+			local spot = ship and ship:FindFirstChild("DeckSpot1", true)
+			if spot and spot:IsA("BasePart") then
+				center = spot.Position
+			end
 			local a = math.rad(35) + math.sin(t * 0.08) * 0.25
-			cam.CFrame = CFrame.lookAt(Vector3.new(math.cos(a) * 85, 34, math.sin(a) * 85), Vector3.new(0, 14, 0))
+			cam.CFrame = CFrame.lookAt(center + Vector3.new(math.cos(a) * 85, 24, math.sin(a) * 85), center + Vector3.new(0, 4, 0))
 		end)
 	else
 		if camConn then

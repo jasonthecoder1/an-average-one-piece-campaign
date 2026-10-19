@@ -10,6 +10,17 @@
       "$className": "ServerScriptService",
       "Server": { "$path": "src/server" }
     },
+    "ServerStorage": {
+      "$className": "ServerStorage",
+      "$ignoreUnknownInstances": true,
+      "Maps": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true,
+        "Islands": { "$className": "Folder", "$ignoreUnknownInstances": true },
+        "Bosses": { "$className": "Folder", "$ignoreUnknownInstances": true },
+        "Ship": { "$className": "Folder", "$ignoreUnknownInstances": true }
+      }
+    },
     "StarterPlayer": {
       "$className": "StarterPlayer",
       "StarterPlayerScripts": {

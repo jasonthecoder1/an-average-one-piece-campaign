@@ -1,5 +1,7 @@
--- The crew's ship: the only place you can walk. Built from parts at the origin (chunky, readable, wood + rope).
--- Stations (design page "The ship"): Map Table (Ready / chart), Crafting + Crew Chest, Repairs + Lockers,
+-- The crew's ship: the only place you can walk. The OWNER builds the real ship (see MAP_GUIDE.md): put one model
+-- in ServerStorage/Maps/Ship with marker parts named DeckSpot1-6 and one per station. With no ship map yet, a
+-- plain block stand-in deck is used so the game still runs.
+-- Stations (design page "The ship"): Map Table (Ready / chart), Craft Bench + Crew Chest, Repair Bench + Lockers,
 -- Galley (Cook), Infirmary (Doctor), Crow's Nest (Navigator), Stage (Musician), Study (Archaeologist).
 -- Crafting on the ship is always safe. Every action is checked here: you must be in the run and near the station.
 local Players = game:GetService("Players")
@@ -10,12 +12,27 @@ local ItemDefs = require(Shared.ItemDefs)
 local CrewDefs = require(Shared.CrewDefs)
 local Remotes = require(script.Parent.Remotes)
 local Run = require(script.Parent.Run)
+local MapLoader = require(script.Parent.MapLoader)
 
 local ShipService = {}
 
-local DECK_Y = 10
 local ship
+local deckY = 10 -- floor height of the deck (read from DeckSpot1 once the ship is loaded)
 ShipService.Stations = {} -- [name] = { part, label, role? }
+
+-- marker name -> sign text, prompt text, role that may use it (nil = anyone)
+ShipService.StationList = {
+	{ name = "MapTable", label = "MAP TABLE", action = "Sea Chart / Ready" },
+	{ name = "CraftBench", label = "CRAFTING", action = "Craft" },
+	{ name = "CrewChest", label = "CREW CHEST", action = "Open" },
+	{ name = "RepairBench", label = "REPAIRS", action = "Repair hull" },
+	{ name = "Lockers", label = "LOCKERS", action = "Open your locker" },
+	{ name = "Galley", label = "GALLEY", action = "Cook", role = "Cook" },
+	{ name = "Infirmary", label = "INFIRMARY", action = "Treat crew", role = "Doctor" },
+	{ name = "CrowsNest", label = "CROW'S NEST", action = "Look out", role = "Navigator" },
+	{ name = "Stage", label = "STAGE", action = "Play a song", role = "Musician" },
+	{ name = "Study", label = "STUDY", action = "Study old charts", role = "Archaeologist" },
+}
 
 local WOOD = Color3.fromRGB(150, 100, 60)
 local DARK = Color3.fromRGB(100, 65, 38)
@@ -26,29 +43,68 @@ local function part(props)
 	p.Anchored = true
 	p.TopSurface = Enum.SurfaceType.Smooth
 	p.BottomSurface = Enum.SurfaceType.Smooth
-	p.Material = Enum.Material.WoodPlanks
+	p.Material = Enum.Material.SmoothPlastic
 	p.Color = WOOD
 	for k, v in props do
-		p[k] = v
+		if k ~= "Parent" then
+			p[k] = v
+		end
 	end
-	p.Parent = props.Parent or ship
+	p.Parent = props.Parent
 	return p
 end
 
-local function station(name, label, action, pos, size, color, role)
-	local p = part({ Name = name, Size = size, Position = Vector3.new(pos.X, DECK_Y + size.Y / 2, pos.Z), Color = color or DARK, Material = Enum.Material.Wood })
+-- Plain block stand-in: a box deck with rails, a mast, and one labeled box per station + all markers.
+local function buildStandIn()
+	local m = Instance.new("Model")
+	m.Name = "StandInShip"
+	local y = 10
+	part({ Name = "Sea", Size = Vector3.new(2048, 2, 2048), Position = Vector3.new(0, -1, 0), Color = Color3.fromRGB(35, 115, 185), Material = Enum.Material.Glass, Transparency = 0.1, Parent = m })
+	part({ Name = "Hull", Size = Vector3.new(80, 10, 28), Position = Vector3.new(0, y - 5, 0), Color = DARK, Parent = m })
+	part({ Name = "Deck", Size = Vector3.new(80, 1, 28), Position = Vector3.new(0, y - 0.5, 0), Color = WOOD, Parent = m })
+	part({ Name = "RailN", Size = Vector3.new(80, 3, 1), Position = Vector3.new(0, y + 1.5, 14), Color = DARK, Parent = m })
+	part({ Name = "RailS", Size = Vector3.new(80, 3, 1), Position = Vector3.new(0, y + 1.5, -14), Color = DARK, Parent = m })
+	part({ Name = "RailBack", Size = Vector3.new(1, 3, 28), Position = Vector3.new(-40, y + 1.5, 0), Color = DARK, Parent = m })
+	part({ Name = "RailFront", Size = Vector3.new(1, 3, 28), Position = Vector3.new(40, y + 1.5, 0), Color = DARK, Parent = m })
+	part({ Name = "Mast", Size = Vector3.new(2, 30, 2), Position = Vector3.new(2, y + 15, 0), Color = DARK, Parent = m })
+	part({ Name = "Sail", Size = Vector3.new(1, 14, 22), Position = Vector3.new(3.5, y + 20, 0), Color = CREAM, CanCollide = false, Parent = m })
+	local spots = {
+		MapTable = { Vector3.new(10, 0, 0), Vector3.new(6, 3, 4) },
+		CraftBench = { Vector3.new(-12, 0, -10), Vector3.new(7, 3.5, 3) },
+		CrewChest = { Vector3.new(-20, 0, -10), Vector3.new(4.5, 3, 3) },
+		RepairBench = { Vector3.new(-12, 0, 10), Vector3.new(6, 2.5, 3) },
+		Lockers = { Vector3.new(-21, 0, 11.5), Vector3.new(7, 6, 2) },
+		Galley = { Vector3.new(24, 0, -10), Vector3.new(5, 4, 3) },
+		Infirmary = { Vector3.new(24, 0, 10), Vector3.new(6, 2, 3.5) },
+		CrowsNest = { Vector3.new(4, 0, -3.5), Vector3.new(2, 8, 1) },
+		Stage = { Vector3.new(33, 0, 0), Vector3.new(6, 1, 6) },
+		Study = { Vector3.new(-30, 0, -7), Vector3.new(1.5, 7, 6) },
+	}
+	for name, s in spots do
+		part({ Name = name, Size = s[2], Position = Vector3.new(s[1].X, y + s[2].Y / 2, s[1].Z), Color = Color3.fromRGB(120, 80, 45), Parent = m })
+	end
+	for i = 1, 6 do
+		local col = (i - 1) % 3
+		local row = math.floor((i - 1) / 3)
+		local pos = Vector3.new(-2 + col * 5, y + 0.5, -3 + row * 6)
+		part({ Name = "DeckSpot" .. i, Size = Vector3.new(2, 1, 2), CFrame = CFrame.lookAt(pos, pos + Vector3.new(1, 0, 0)), Transparency = 1, CanCollide = false, CanQuery = false, Parent = m })
+	end
+	return m
+end
+
+-- Put the prompt and a floating sign on a station marker.
+local function decorate(p, info)
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.Name = name
-	prompt.ObjectText = label
-	prompt.ActionText = action
+	prompt.Name = info.name
+	prompt.ObjectText = info.label
+	prompt.ActionText = info.action
 	prompt.HoldDuration = 0
 	prompt.MaxActivationDistance = 10
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = p
-	-- floating sign so stations read from far away
 	local bb = Instance.new("BillboardGui")
 	bb.Size = UDim2.fromOffset(160, 34)
-	bb.StudsOffset = Vector3.new(0, size.Y / 2 + 2.2, 0)
+	bb.StudsOffset = Vector3.new(0, p.Size.Y / 2 + 2.2, 0)
 	bb.MaxDistance = 70
 	bb.Parent = p
 	local t = Instance.new("TextLabel")
@@ -57,88 +113,57 @@ local function station(name, label, action, pos, size, color, role)
 	t.TextColor3 = CREAM
 	t.Font = Enum.Font.Bangers
 	t.TextScaled = true
-	t.Text = label
+	t.Text = info.label
 	t.Parent = bb
 	local st = Instance.new("UIStroke")
 	st.Color = CREAM
 	st.Thickness = 2
 	st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	st.Parent = t
-	ShipService.Stations[name] = { part = p, label = label, role = role }
-	return p
+	ShipService.Stations[info.name] = { part = p, label = info.label, role = info.role }
 end
 
 function ShipService.build()
 	if ship then
 		return ship
 	end
-	ship = Instance.new("Model")
-	ship.Name = "Ship"
-	ship.Parent = workspace
-
-	-- sea
-	part({ Name = "Sea", Size = Vector3.new(2048, 2, 2048), Position = Vector3.new(0, -1, 0), Color = Color3.fromRGB(35, 115, 185), Material = Enum.Material.Glass, Transparency = 0.1 })
-	-- hull (stacked boards that get narrower toward the keel) and a pointed bow
-	for i = 0, 4 do
-		local w = 28 - i * 4
-		part({ Name = "Hull", Size = Vector3.new(80 - i * 6, 2, w), Position = Vector3.new(-2, DECK_Y - 1 - i * 2, 0), Color = if i % 2 == 0 then DARK else WOOD })
+	local template = MapLoader.list("Ship")[1]
+	if template then
+		ship = MapLoader.place(template, workspace, "Ship")
+	else
+		ship = buildStandIn()
+		ship.Name = "Ship"
+		ship.Parent = workspace
 	end
-	for i = 0, 3 do
-		local w = 22 - i * 5
-		part({ Name = "Bow", Size = Vector3.new(10, 2, w), Position = Vector3.new(43 + i * 3, DECK_Y - 1, 0), Color = DARK })
-	end
-	part({ Name = "Deck", Size = Vector3.new(80, 1, 28), Position = Vector3.new(-2, DECK_Y - 0.5, 0), Color = Color3.fromRGB(180, 130, 80) })
-	-- rails all around (keeps crew from falling into the sea)
-	part({ Name = "RailN", Size = Vector3.new(80, 3, 1), Position = Vector3.new(-2, DECK_Y + 1.5, 14), Color = DARK })
-	part({ Name = "RailS", Size = Vector3.new(80, 3, 1), Position = Vector3.new(-2, DECK_Y + 1.5, -14), Color = DARK })
-	part({ Name = "RailStern", Size = Vector3.new(1, 3, 28), Position = Vector3.new(-42, DECK_Y + 1.5, 0), Color = DARK })
-	part({ Name = "RailBowN", Size = Vector3.new(16, 3, 1), CFrame = CFrame.new(44, DECK_Y + 1.5, 9) * CFrame.Angles(0, math.rad(35), 0), Color = DARK })
-	part({ Name = "RailBowS", Size = Vector3.new(16, 3, 1), CFrame = CFrame.new(44, DECK_Y + 1.5, -9) * CFrame.Angles(0, math.rad(-35), 0), Color = DARK })
-	part({ Name = "Figurehead", Shape = Enum.PartType.Ball, Size = Vector3.new(5, 5, 5), Position = Vector3.new(52, DECK_Y + 1, 0), Color = Color3.fromRGB(240, 200, 70), Material = Enum.Material.SmoothPlastic })
-	-- mast, sail with a jolly roger, crow's nest
-	part({ Name = "Mast", Shape = Enum.PartType.Cylinder, Size = Vector3.new(44, 2.2, 2.2), CFrame = CFrame.new(2, DECK_Y + 22, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = DARK, Material = Enum.Material.Wood })
-	part({ Name = "Sail", Size = Vector3.new(1, 18, 26), Position = Vector3.new(3.5, DECK_Y + 24, 0), Color = CREAM, Material = Enum.Material.Fabric, CanCollide = false })
-	part({ Name = "Skull", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.4, 7, 7), CFrame = CFrame.new(4.2, DECK_Y + 25, 0), Color = Color3.fromRGB(20, 20, 20), Material = Enum.Material.SmoothPlastic, CanCollide = false })
-	part({ Name = "Bone1", Size = Vector3.new(0.3, 1.2, 12), CFrame = CFrame.new(4.3, DECK_Y + 20.5, 0) * CFrame.Angles(math.rad(30), 0, 0), Color = Color3.fromRGB(20, 20, 20), Material = Enum.Material.SmoothPlastic, CanCollide = false })
-	part({ Name = "Bone2", Size = Vector3.new(0.3, 1.2, 12), CFrame = CFrame.new(4.3, DECK_Y + 20.5, 0) * CFrame.Angles(math.rad(-30), 0, 0), Color = Color3.fromRGB(20, 20, 20), Material = Enum.Material.SmoothPlastic, CanCollide = false })
-	part({ Name = "CrowsNest", Shape = Enum.PartType.Cylinder, Size = Vector3.new(3, 7, 7), CFrame = CFrame.new(2, DECK_Y + 38, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = DARK })
-	-- stern cabin
-	part({ Name = "Cabin", Size = Vector3.new(14, 9, 26), Position = Vector3.new(-35, DECK_Y + 4.5, 0), Color = WOOD })
-	part({ Name = "CabinRoof", Size = Vector3.new(15, 1, 27), Position = Vector3.new(-35, DECK_Y + 9.5, 0), Color = DARK })
-	part({ Name = "CabinDoor", Size = Vector3.new(0.4, 6, 4), Position = Vector3.new(-27.9, DECK_Y + 3, 0), Color = Color3.fromRGB(70, 45, 25) })
-	-- story props: barrels, crates, rope coils
-	for i, pos in { Vector3.new(36, 0, -10), Vector3.new(34, 0, 11), Vector3.new(-24, 0, 12), Vector3.new(12, 0, 12), Vector3.new(14, 0, -12) } do
-		if i % 2 == 0 then
-			part({ Name = "Crate", Size = Vector3.new(3, 3, 3), Position = Vector3.new(pos.X, DECK_Y + 1.5, pos.Z), Color = Color3.fromRGB(165, 115, 60) })
+	for _, info in ShipService.StationList do
+		local p = MapLoader.marker(ship, info.name)
+		if p then
+			decorate(p, info)
 		else
-			part({ Name = "Barrel", Shape = Enum.PartType.Cylinder, Size = Vector3.new(3.4, 2.6, 2.6), CFrame = CFrame.new(pos.X, DECK_Y + 1.7, pos.Z) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(120, 75, 40), Material = Enum.Material.Wood })
+			warn("[Ship] the ship map has no part named " .. info.name .. " - that station is missing (see MAP_GUIDE.md)")
 		end
 	end
-	-- stations
-	local mt = station("MapTable", "MAP TABLE", "Sea Chart / Ready", Vector3.new(10, 0, 0), Vector3.new(6, 3, 4))
-	part({ Name = "MapPaper", Size = Vector3.new(5, 0.2, 3.2), Position = mt.Position + Vector3.new(0, 1.6, 0), Color = CREAM, Material = Enum.Material.SmoothPlastic })
-	station("Crafting", "CRAFTING", "Craft", Vector3.new(-12, 0, -10), Vector3.new(7, 3.5, 3))
-	station("CrewChest", "CREW CHEST", "Open", Vector3.new(-20, 0, -10), Vector3.new(4.5, 3, 3), Color3.fromRGB(120, 80, 40))
-	station("Repairs", "REPAIRS", "Repair hull", Vector3.new(-12, 0, 10), Vector3.new(6, 2.5, 3), Color3.fromRGB(110, 110, 120))
-	station("Lockers", "LOCKERS", "Open your locker", Vector3.new(-21, 0, 11.5), Vector3.new(7, 6, 2), Color3.fromRGB(90, 95, 105))
-	station("Galley", "GALLEY", "Cook", Vector3.new(24, 0, -10), Vector3.new(5, 4, 3), Color3.fromRGB(70, 70, 75), "Cook")
-	station("Infirmary", "INFIRMARY", "Treat crew", Vector3.new(24, 0, 10), Vector3.new(6, 2, 3.5), CREAM, "Doctor")
-	station("CrowsNestLadder", "CROW'S NEST", "Look out", Vector3.new(4, 0, -3.5), Vector3.new(2, 8, 1), DARK, "Navigator")
-	station("Stage", "STAGE", "Play a song", Vector3.new(33, 0, 0), Vector3.new(6, 1, 6), Color3.fromRGB(150, 40, 40), "Musician")
-	station("Study", "STUDY", "Study old charts", Vector3.new(-27, 0, -7), Vector3.new(1.5, 7, 6), Color3.fromRGB(90, 60, 40), "Archaeologist")
-
-	-- spawn on the deck
-	local spawn = Instance.new("SpawnLocation")
-	spawn.Name = "DeckSpawn"
-	spawn.Anchored = true
-	spawn.Size = Vector3.new(8, 1, 8)
-	spawn.Position = Vector3.new(0, DECK_Y - 0.4, 6)
-	spawn.Transparency = 1
-	spawn.CanCollide = false
-	spawn.Duration = 0
-	spawn.Neutral = true
-	spawn.Parent = ship
-	for _, s in workspace:GetChildren() do
+	local d1 = MapLoader.marker(ship, "DeckSpot1")
+	if d1 then
+		deckY = MapLoader.groundCFrame(d1).Position.Y
+	else
+		warn("[Ship] the ship map has no DeckSpot1 (see MAP_GUIDE.md)")
+	end
+	-- spawn on the deck (use the map's own SpawnLocation if it has one)
+	local spawn = ship:FindFirstChildWhichIsA("SpawnLocation", true)
+	if not spawn then
+		spawn = Instance.new("SpawnLocation")
+		spawn.Name = "DeckSpawn"
+		spawn.Anchored = true
+		spawn.Size = Vector3.new(6, 1, 6)
+		spawn.CFrame = ShipService.deckSpot(1) * CFrame.new(0, -2.9, 0)
+		spawn.Transparency = 1
+		spawn.CanCollide = false
+		spawn.Duration = 0
+		spawn.Neutral = true
+		spawn.Parent = ship
+	end
+	for _, s in workspace:GetDescendants() do
 		if s:IsA("SpawnLocation") and s ~= spawn then
 			s.Enabled = false
 		end
@@ -146,10 +171,21 @@ function ShipService.build()
 	return ship
 end
 
+-- Where crewmate i stands on deck (root height, facing the marker's front face). Missing DeckSpots fall back to
+-- standing in a line next to DeckSpot1.
 function ShipService.deckSpot(i)
+	if ship then
+		local own = MapLoader.marker(ship, "DeckSpot" .. i)
+		local first = MapLoader.marker(ship, "DeckSpot1")
+		if own then
+			return MapLoader.groundCFrame(own) * CFrame.new(0, 3, 0)
+		elseif first then
+			return MapLoader.groundCFrame(first) * CFrame.new((i - 1) * 3, 3, 0)
+		end
+	end
 	local col = (i - 1) % 3
 	local row = math.floor((i - 1) / 3)
-	return CFrame.new(-2 + col * 5, DECK_Y + 3, -3 + row * 6)
+	return CFrame.new(-2 + col * 5, deckY + 3, -3 + row * 6)
 end
 
 -- ===== inventory =====
@@ -188,7 +224,7 @@ local function say(player, text)
 end
 
 local function onCraft(player, m, run, index)
-	if not near(player, "Crafting") then
+	if not near(player, "CraftBench") then
 		say(player, "Walk to the Crafting bench.")
 		return
 	end
@@ -326,7 +362,7 @@ local function onUse(player, m, run, index)
 		end
 		m.hpFrac = math.min(1, (m.hpFrac or 1) + def.heal)
 	elseif def.hull then
-		if not near(player, "Repairs") then
+		if not near(player, "RepairBench") then
 			say(player, "Use Hull Patches at the Repairs station.")
 		return
 		end
@@ -369,7 +405,7 @@ local function onStation(player, m, run, name)
 		local item = mats[Random.new():NextInteger(1, 3)]
 		Run.addLoot(run, { [item] = 1 })
 		Remotes.toast(nil, m.name .. " (Archaeologist) finds a note about hidden supplies: +1 " .. item .. ".")
-	elseif name == "CrowsNestLadder" then
+	elseif name == "CrowsNest" then
 		say(player, "From up here you can see far. Open the Sea Chart: as Navigator you see what waits at every stop.")
 		return
 	else
@@ -431,7 +467,7 @@ task.spawn(function()
 			for i, m in Run.members(run) do
 				local ch = m.player.Character
 				local root = ch and ch:FindFirstChild("HumanoidRootPart")
-				if root and root.Position.Y < DECK_Y - 4 and math.abs(root.Position.Z - 420) > 200 then
+				if root and root.Position.Y < deckY - 8 then
 					root.CFrame = ShipService.deckSpot(i)
 					say(m.player, "SPLASH! Your crew fished you out of the sea.")
 				end

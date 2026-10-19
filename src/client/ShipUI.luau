@@ -243,13 +243,13 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt)
 		if ShipUI.openChart then
 			ShipUI.openChart()
 		end
-	elseif n == "Crafting" then
+	elseif n == "CraftBench" then
 		showCraft()
 	elseif n == "CrewChest" then
 		showStorage("chest")
 	elseif n == "Lockers" then
 		showStorage("locker")
-	elseif n == "Repairs" then
+	elseif n == "RepairBench" then
 		showRepairs()
 	else
 		remote:FireServer("station", n)

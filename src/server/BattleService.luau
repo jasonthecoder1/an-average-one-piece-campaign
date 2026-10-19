@@ -730,7 +730,7 @@ local function placeCrew(battle)
 		local root = ch and ch:FindFirstChild("HumanoidRootPart")
 		if root then
 			root.Anchored = true
-			root.CFrame = Arena.crewSlot(u.slot) * CFrame.new(0, 2, 0)
+			root.CFrame = Arena.crewSlot(u.slot) * CFrame.new(0, 3, 0)
 		end
 	end
 end
@@ -740,7 +740,7 @@ local function releaseCrew(battle)
 		local ch = u.player and u.player.Character
 		local root = ch and ch:FindFirstChild("HumanoidRootPart")
 		if root then
-			root.CFrame = Arena.crewSlot(u.slot) * CFrame.new(0, 2, 0) -- stand back up
+			root.CFrame = Arena.crewSlot(u.slot) * CFrame.new(0, 3, 0) -- stand back up
 			root.Anchored = false
 		end
 	end
@@ -752,8 +752,17 @@ end
 
 function BattleService.fight(run, enemyIds, opts)
 	opts = opts or {}
-	Arena.build()
 	Arena.clearEnemies()
+	-- load the owner's arena (boss arena named after the boss, else a random island; stand-in if none)
+	local bossId = nil
+	for _, id in enemyIds do
+		local def = BattleDefs.Enemies[id]
+		if def and def.rank == "boss" then
+			bossId = id
+			break
+		end
+	end
+	Arena.load(opts.kind or "Fight", bossId, run.sea or 1)
 	nextId += 1
 	local battle = {
 		id = nextId, run = run, sea = run.sea or 1, rng = Random.new(), round = 0, token = 0, pending = {},

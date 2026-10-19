@@ -1,16 +1,21 @@
--- The fight arena: an island clearing near the anchored ship. Crew stands on the near side in two rows of 3
--- (seen from behind by the For The King-style camera), enemies on the far side.
+-- The fight arena. The OWNER builds the real island / boss arenas (see MAP_GUIDE.md and MapLoader.luau);
+-- this file loads one per fight and reads its marker parts (CrewSpot1-6, EnemySpot1-6, CameraSpot).
+-- With no maps yet, a plain block stand-in is used so the game still runs.
 -- Enemies are chunky block figures built here (all original looks from BattleDefs.Looks).
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local BattleDefs = require(ReplicatedStorage.Shared.BattleDefs)
+local MapLoader = require(script.Parent.MapLoader)
 
 local Arena = {}
 
-Arena.Center = Vector3.new(0, 2, 420) -- beside the ship (ship sits around the origin)
+Arena.Center = Vector3.new(0, 2, 420) -- where the stand-in island goes (away from the ship at the origin)
 local C = Arena.Center
+Arena.CameraPos = C + Vector3.new(14, 22, 42) -- set again by Arena.load from the map's CameraSpot
+Arena.CameraLook = C + Vector3.new(0, 0, -8)
 
 local folder
+local current -- the loaded arena model
 
 local function part(props)
 	local p = Instance.new("Part")
@@ -23,27 +28,41 @@ local function part(props)
 	return p
 end
 
--- Slot positions: index 1..6. Front row 1-3, back row 4-6.
-function Arena.crewSlot(i)
+-- Default spot layout around a center (ground level): crew in two rows of 3 on the near side (+Z),
+-- enemies on the far side (-Z), facing each other. Used by the stand-in and for any marker a map is missing.
+local function defaultCrew(center, i)
 	local row = if i <= 3 then 0 else 1
 	local col = ((i - 1) % 3) - 1
-	local pos = C + Vector3.new(col * 7 + row * 3.5, 1, 11 + row * 7)
-	return CFrame.lookAt(pos, Vector3.new(pos.X, pos.Y, C.Z - 20))
+	local pos = center + Vector3.new(col * 7 + row * 3.5, 0, 11 + row * 7)
+	return CFrame.lookAt(pos, pos - Vector3.new(0, 0, 1))
 end
 
-function Arena.enemySlot(i, n)
+local function defaultEnemy(center, i)
 	local row = if i <= 3 then 0 else 1
 	local col = ((i - 1) % 3) - 1
-	if n == 1 then
-		col = 0
+	local pos = center + Vector3.new(col * 8 + row * 4, 0, -11 - row * 8)
+	return CFrame.lookAt(pos, pos + Vector3.new(0, 0, 1))
+end
+
+local function marker(model, name, size, cf)
+	local p = part({ Name = name, Size = size, CFrame = cf * CFrame.new(0, size.Y / 2, 0), Transparency = 1, CanCollide = false, CanQuery = false, Parent = model })
+	return p
+end
+
+-- A plain block stand-in island with all the markers, so fights work before the owner's maps exist.
+local function buildStandIn()
+	local m = Instance.new("Model")
+	m.Name = "StandInIsland"
+	part({ Name = "Ground", Size = Vector3.new(90, 2, 80), Position = C - Vector3.new(0, 1, 0), Color = Color3.fromRGB(226, 200, 140), Material = Enum.Material.Sand, Parent = m })
+	local center = Vector3.new(C.X, C.Y, C.Z)
+	for i = 1, 6 do
+		marker(m, "CrewSpot" .. i, Vector3.new(2, 1, 2), defaultCrew(center, i))
+		marker(m, "EnemySpot" .. i, Vector3.new(2, 1, 2), defaultEnemy(center, i))
 	end
-	local pos = C + Vector3.new(col * 8 + row * 4, 1, -11 - row * 8)
-	return CFrame.lookAt(pos, Vector3.new(pos.X, pos.Y, C.Z + 20))
+	local camPos = center + Vector3.new(14, 22, 42)
+	marker(m, "CameraSpot", Vector3.new(1, 1, 1), CFrame.lookAt(camPos, center + Vector3.new(0, 0, -8)) * CFrame.new(0, -0.5, 0))
+	return m
 end
-
--- Camera spot for the client (behind and above the crew, looking at the enemies).
-Arena.CameraPos = C + Vector3.new(14, 22, 42)
-Arena.CameraLook = C + Vector3.new(0, 0, -8)
 
 function Arena.build()
 	if folder then
@@ -52,39 +71,10 @@ function Arena.build()
 	folder = Instance.new("Folder")
 	folder.Name = "Arena"
 	folder.Parent = workspace
-
-	-- sand clearing + grass rim
-	part({ Name = "Ground", Size = Vector3.new(90, 2, 80), Position = C - Vector3.new(0, 1, 0), Color = Color3.fromRGB(226, 200, 140), Material = Enum.Material.Sand, Parent = folder })
-	part({ Name = "Grass", Size = Vector3.new(130, 1.6, 120), Position = C - Vector3.new(0, 1.6, 0), Color = Color3.fromRGB(90, 160, 70), Material = Enum.Material.Grass, Parent = folder })
-	part({ Name = "Sea", Size = Vector3.new(600, 1, 600), Position = C - Vector3.new(0, 3.3, 0), Color = Color3.fromRGB(40, 120, 190), Material = Enum.Material.Glass, Transparency = 0.15, CanCollide = false, Parent = folder })
-
-	local rng = Random.new(42)
-	-- palm trees around the edge (chunky, readable from far away)
-	for i = 1, 14 do
-		local a = (i / 14) * math.pi * 2
-		local r = rng:NextNumber(42, 55)
-		local base = C + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r * 0.9)
-		if base.Z > C.Z + 30 and math.abs(base.X - C.X) < 30 then
-			continue -- keep the camera side open
-		end
-		local h = rng:NextNumber(12, 18)
-		part({ Name = "Trunk", Size = Vector3.new(1.6, h, 1.6), CFrame = CFrame.new(base + Vector3.new(0, h / 2, 0)) * CFrame.Angles(0, 0, math.rad(rng:NextNumber(-8, 8))), Color = Color3.fromRGB(130, 90, 55), Material = Enum.Material.Wood, Parent = folder })
-		for k = 1, 4 do
-			local leaf = part({ Name = "Leaf", Size = Vector3.new(9, 0.6, 2.4), Color = Color3.fromRGB(60, 150, 60), Material = Enum.Material.Grass, CanCollide = false, Parent = folder })
-			leaf.CFrame = CFrame.new(base + Vector3.new(0, h, 0)) * CFrame.Angles(0, k * math.pi / 2, math.rad(-18)) * CFrame.new(4, 0, 0)
-		end
-	end
-	-- story props: crates, barrels, rope posts
-	for i = 1, 10 do
-		local pos = C + Vector3.new(rng:NextNumber(-38, 38), 0, rng:NextNumber(-34, -24))
-		if i % 2 == 0 then
-			part({ Name = "Crate", Size = Vector3.new(3, 3, 3), Position = pos + Vector3.new(0, 1.5, 0), Orientation = Vector3.new(0, rng:NextNumber(0, 90), 0), Color = Color3.fromRGB(160, 110, 60), Material = Enum.Material.WoodPlanks, Parent = folder })
-		else
-			local b = part({ Name = "Barrel", Shape = Enum.PartType.Cylinder, Size = Vector3.new(3.2, 2.4, 2.4), Color = Color3.fromRGB(120, 75, 40), Material = Enum.Material.Wood, Parent = folder })
-			b.CFrame = CFrame.new(pos + Vector3.new(0, 1.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
-		end
-	end
-	-- warm light
+	local enemies = Instance.new("Folder")
+	enemies.Name = "Enemies"
+	enemies.Parent = folder
+	-- warm light (the owner's maps can bring their own Lighting later)
 	local lighting = game:GetService("Lighting")
 	lighting.ClockTime = 15.5
 	lighting.Brightness = 2.2
@@ -96,11 +86,87 @@ function Arena.build()
 		atm.Decay = Color3.fromRGB(255, 170, 120)
 		atm.Parent = lighting
 	end
-
-	local enemies = Instance.new("Folder")
-	enemies.Name = "Enemies"
-	enemies.Parent = folder
 	return folder
+end
+
+-- Load the arena for a fight. kind = "Fight" | "Elite" | "Boss"; bossId = the boss's enemy id (boss fights).
+function Arena.load(kind, bossId, sea)
+	Arena.build()
+	if current then
+		current:Destroy()
+		current = nil
+	end
+	local template = nil
+	if kind == "Boss" then
+		template = (bossId and MapLoader.find("Bosses", bossId)) or nil
+		if not template then
+			local list = MapLoader.list("Bosses", sea)
+			if #list > 0 then
+				template = list[math.random(1, #list)]
+			end
+		end
+	end
+	if not template then
+		local list = MapLoader.list("Islands", sea)
+		if #list > 0 then
+			template = list[math.random(1, #list)]
+		end
+	end
+	if template then
+		current = MapLoader.place(template, folder, "Map")
+	else
+		current = buildStandIn()
+		current.Name = "Map"
+		current.Parent = folder
+	end
+	-- camera: the CameraSpot's front face looks at the fight
+	local cam = MapLoader.marker(current, "CameraSpot")
+	local c1 = MapLoader.marker(current, "CrewSpot1")
+	local e1 = MapLoader.marker(current, "EnemySpot1")
+	if cam then
+		Arena.CameraPos = cam.Position
+		Arena.CameraLook = cam.Position + cam.CFrame.LookVector * 40
+	else
+		local a = if c1 then c1.Position else C + Vector3.new(0, 0, 11)
+		local b = if e1 then e1.Position else C + Vector3.new(0, 0, -11)
+		local away = (a - b)
+		away = Vector3.new(away.X, 0, away.Z)
+		away = if away.Magnitude > 0.1 then away.Unit else Vector3.new(0, 0, 1)
+		Arena.CameraPos = a + away * 30 + Vector3.new(0, 22, 0)
+		Arena.CameraLook = (a + b) / 2
+	end
+	return current
+end
+
+local function center()
+	if current then
+		local c1 = MapLoader.marker(current, "CrewSpot1")
+		local e1 = MapLoader.marker(current, "EnemySpot1")
+		if c1 and e1 then
+			return (MapLoader.groundCFrame(c1).Position + MapLoader.groundCFrame(e1).Position) / 2
+		end
+		return current:GetPivot().Position
+	end
+	return C
+end
+
+-- Ground CFrame (facing the enemies) for crew slot i (1..6).
+function Arena.crewSlot(i)
+	local p = current and MapLoader.marker(current, "CrewSpot" .. i)
+	if p then
+		return MapLoader.groundCFrame(p)
+	end
+	return defaultCrew(center(), i)
+end
+
+-- Ground CFrame (facing the crew) for enemy slot i. A lone enemy stands on the middle spot (2) if it exists.
+function Arena.enemySlot(i, n)
+	local idx = if n == 1 and current and MapLoader.marker(current, "EnemySpot2") then 2 else i
+	local p = current and MapLoader.marker(current, "EnemySpot" .. idx)
+	if p then
+		return MapLoader.groundCFrame(p)
+	end
+	return defaultEnemy(center(), i)
 end
 
 -- A block figure for an enemy. Returns the Model (PrimaryPart = root, anchored; the rest welded).
@@ -111,7 +177,7 @@ function Arena.spawnEnemy(def, uid, cf)
 	m.Name = uid
 	m:SetAttribute("Uid", uid)
 	local root = part({ Name = "Root", Size = Vector3.new(2, 2, 1) * s, Transparency = 1, CanCollide = false, Parent = m })
-	root.CFrame = cf * CFrame.new(0, 2 * s, 0)
+	root.CFrame = cf * CFrame.new(0, 3 * s, 0) -- cf is the ground spot; legs reach the floor
 	m.PrimaryPart = root
 	local function limb(name, size, offset, color, mat)
 		local p = part({ Name = name, Size = size * s, Color = color, Material = mat or Enum.Material.SmoothPlastic, Anchored = false, CanCollide = false, Parent = m })
@@ -147,7 +213,7 @@ function Arena.spawnEnemy(def, uid, cf)
 	if def.rank ~= "minion" then
 		limb("Weapon", Vector3.new(0.25, 0.25, 4), Vector3.new(1.45, -0.9, -1.8), Color3.fromRGB(200, 200, 210), Enum.Material.Metal)
 	end
-	m.Parent = folder.Enemies
+	m.Parent = Arena.build().Enemies
 	return m
 end
 
