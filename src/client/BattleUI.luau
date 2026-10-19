@@ -84,7 +84,7 @@ local function popup(uid, text, color, big)
 	if not adornee then
 		return
 	end
-	local bb = new("BillboardGui", { Size = UDim2.fromOffset(200, 60), StudsOffset = Vector3.new(math.random(-10, 10) / 10, 4.5, 0), AlwaysOnTop = true, Adornee = adornee, Parent = gui })
+	local bb = new("BillboardGui", { Size = UDim2.fromOffset(200, 60), StudsOffset = Vector3.new(math.random(-10, 10) / 10, 4.5, 0), AlwaysOnTop = true, Adornee = adornee, Parent = player:FindFirstChildOfClass("PlayerGui") })
 	local l = Kit.label({ Text = text, Font = Style.Display, TextSize = if big then 46 else 34, Color = color or Style.Cream, Size = UDim2.fromScale(1, 1), Parent = bb, Outline = 3 })
 	TweenService:Create(bb, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { StudsOffset = bb.StudsOffset + Vector3.new(0, 2.5, 0) }):Play()
 	task.delay(0.6, function()
@@ -306,13 +306,13 @@ local function clearList()
 	end
 end
 
-local function sendAction(moveId, targetUid, part)
-	if not choosing then
-		return
-	end
-	remote:FireServer("action", { token = choosing.token, moveId = moveId, targetUid = targetUid, part = part })
+-- Hide the move menu and forget the pick (after sending, or when the turn timer ran out).
+local function endChoosing()
 	choosing = nil
 	pick = nil
+	if not gui then
+		return
+	end
 	ui.cmd.Visible = false
 	ui.list.Visible = false
 	ui.parts.Visible = false
@@ -325,6 +325,14 @@ local function sendAction(moveId, targetUid, part)
 	if hl then
 		hl:Destroy()
 	end
+end
+
+local function sendAction(moveId, targetUid, part)
+	if not choosing then
+		return
+	end
+	remote:FireServer("action", { token = choosing.token, moveId = moveId, targetUid = targetUid, part = part })
+	endChoosing()
 end
 
 local function highlight(uid)
@@ -580,7 +588,7 @@ local function showEnd(data)
 	else
 		table.insert(lines, "Your crew was knocked out.")
 	end
-	local gain = data.bounty and data.bounty[player.UserId] or 0
+	local gain = data.bounty and data.bounty[tostring(player.UserId)] or 0
 	table.insert(lines, "Your bounty: +" .. Kit.commas(gain) .. " berries")
 	Kit.label({ Text = table.concat(lines, "\n"), Font = Style.Body, TextSize = 20, Wrap = true, Size = UDim2.new(1, -40, 1, -50), Position = UDim2.fromOffset(20, 30), ZIndex = 72, Parent = panel })
 	Kit.stamp(gui, if data.won then "VICTORY" else "DEFEAT", if data.won then Style.Red else Style.Dim, UDim2.fromScale(0.5, 0.18))
@@ -590,6 +598,7 @@ end
 
 local function onMessage(msg, data, extra)
 	if msg == "start" then
+		choosing, pick = nil, nil
 		buildScreen()
 		BattleUI.refresh(data)
 		setCamera(extra.camPos, extra.camLook)
@@ -613,11 +622,16 @@ local function onMessage(msg, data, extra)
 	elseif msg == "round" then
 		ui.round.Text = "ROUND " .. data
 	elseif msg == "choose" then
+		pick = nil
 		choosing = { token = data.token, moves = data.moves, deadline = os.clock() + data.seconds }
 		showCommands(data.moves)
 		task.spawn(function()
 			local tok = data.token
 			while choosing and choosing.token == tok do
+				if os.clock() >= choosing.deadline then
+					endChoosing() -- too slow: the server attacks for you
+					break
+				end
 				local left = math.max(0, math.ceil(choosing.deadline - os.clock()))
 				ui.banner.Text = "YOUR TURN!  " .. left
 				task.wait(0.25)
@@ -637,6 +651,7 @@ local function onMessage(msg, data, extra)
 			ui.banner.Text = string.upper(c.name) .. " ATTACKS!"
 		end
 	elseif msg == "dodge" then
+		endChoosing()
 		ui.banner.Text = "DODGE!"
 		local result = DodgeBox.run(gui, data)
 		remote:FireServer("dodge", { token = data.token, hits = result.hits, grazes = result.grazes })

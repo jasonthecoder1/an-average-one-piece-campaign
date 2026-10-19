@@ -254,9 +254,10 @@ Remotes.Lobby.OnServerEvent:Connect(function(player, msg, data)
 	elseif msg == "join" and Run.current and Run.current.active and not inRun then
 		-- join a run that's already sailing (if the crew has room)
 		if #Run.members(Run.current) < Config.PartyMax then
-			Run.addMember(Run.current, { player = player, userId = player.UserId, name = player.DisplayName, classId = p.classId, race = p.race, haki = p.haki, role = p.role })
-			freeze(player, false)
+			-- close the lobby first, so the chart that addMember broadcasts isn't blocked by the lobby screen
 			Remotes.Lobby:FireClient(player, "close")
+			freeze(player, false)
+			Run.addMember(Run.current, { player = player, userId = player.UserId, name = player.DisplayName, classId = p.classId, race = p.race, haki = p.haki, role = p.role })
 			if LobbyService.onJoin then
 				LobbyService.onJoin(player)
 			end
@@ -297,18 +298,36 @@ function LobbyService.open(run)
 	LobbyService.broadcast()
 end
 
-Players.PlayerAdded:Connect(function(player)
-	profiles[player] = load(player)
-	player.CharacterAdded:Connect(function(ch)
-		local inRun = Run.current and Run.current.active and Run.memberOf(Run.current, player)
-		if not inRun then
-			local root = ch:WaitForChild("HumanoidRootPart", 5)
-			if root then
-				task.wait()
-				root.Anchored = true
-			end
+local function onCharacter(player, ch)
+	local inRun = Run.current and Run.current.active and Run.memberOf(Run.current, player)
+	if not inRun then
+		local root = ch:WaitForChild("HumanoidRootPart", 5)
+		if root then
+			task.wait()
+			root.Anchored = true -- the lobby is a menu: no walking
 		end
+	end
+end
+
+Players.PlayerAdded:Connect(function(player)
+	-- connect first: loading the save can take a moment and the character may spawn meanwhile
+	player.CharacterAdded:Connect(function(ch)
+		onCharacter(player, ch)
 	end)
+	local profile = load(player)
+	if not player.Parent then
+		return
+	end
+	profiles[player] = profile
+	if player.Character then
+		task.spawn(onCharacter, player, player.Character)
+	end
+	-- the client's "hello" may have come in while we were loading: open the lobby now (a 2nd "open" is harmless)
+	local inRun = Run.current and Run.current.active and Run.memberOf(Run.current, player)
+	if not inRun then
+		freeze(player, true)
+		Remotes.Lobby:FireClient(player, "open")
+	end
 	LobbyService.broadcast()
 end)
 

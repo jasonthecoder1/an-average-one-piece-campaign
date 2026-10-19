@@ -32,6 +32,8 @@ task.spawn(function()
 			ShipUI.setHudVisible(not b)
 			if b then
 				MapUI.close()
+			elseif MapUI.chart and MapUI.chart.state == "vote" then
+				MapUI.open() -- a vote started while another screen was up
 			end
 		end
 		task.wait(0.25)

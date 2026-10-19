@@ -544,7 +544,9 @@ local function playerTurn(battle, unit)
 			sendTo(unit, "log", "Too slow! Auto attack.")
 		end
 		local result = doMove(battle, unit, move, targetUid, partId, auto)
-		unit.turnsTaken += 1
+		if result ~= "free" then
+			unit.turnsTaken += 1 -- free moves (Captain's Orders, Smelling Salts) keep "first turn" moves open
+		end
 		if checkEnd(battle) then
 			return
 		end
@@ -826,6 +828,7 @@ function BattleService.fight(run, enemyIds, opts)
 		for _, u in order do
 			u.acted = false
 			u.sortSpeed = if u.statuses.slow then -100 + u.speed else u.speed + battle.rng:NextNumber() * 0.5
+			u.statuses.slow = nil -- SLOW (from LEGS) only pushes it to the back of THIS round's order
 		end
 		table.sort(order, function(a, b)
 			return a.sortSpeed > b.sortSpeed
@@ -843,9 +846,6 @@ function BattleService.fight(run, enemyIds, opts)
 				continue
 			end
 			battle.active = u.uid
-			if u.side == "enemy" then
-				u.statuses.slow = nil
-			end
 			-- poison ticks at the start of its turn
 			local poison = u.statuses.poison
 			if poison then
@@ -932,7 +932,7 @@ function BattleService.fight(run, enemyIds, opts)
 		if not battle.won then
 			gain = math.floor(gain / 4)
 		end
-		result.bounty[u.userId] = gain
+		result.bounty[tostring(u.userId)] = gain -- string keys survive the trip over a RemoteEvent
 		u.member.bounty = (u.member.bounty or 0) + gain
 		-- HP carries over between fights; knocked-out crew get back up after a win
 		local hp = u.hp

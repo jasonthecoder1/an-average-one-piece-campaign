@@ -23,7 +23,7 @@ ClassDefs.Moves = {
 	Backstab = { id = "Backstab", label = "Backstab", menu = "Skill", desc = "Huge damage on an enemy that hasn't acted yet this round.", cost = 2, kind = "attack", qte = "strike", power = { 13, 17 }, hits = 1, element = "Pierce", target = "enemy", notActedMult = 2 },
 	SmokeBomb = { id = "SmokeBomb", label = "Smoke Bomb", menu = "Skill", desc = "Nobody can target you until your next turn.", cost = 2, kind = "smoke", target = "self" },
 	PoisonBlade = { id = "PoisonBlade", label = "Poison Blade", menu = "Skill", desc = "A cut that poisons for 3 turns.", cost = 2, kind = "attack", qte = "strike", power = { 6, 8 }, hits = 1, element = "Pierce", target = "enemy", poison = { turns = 3, dmg = 7 } },
-	Ambush = { id = "Ambush", label = "Ambush", menu = "Heavy", desc = "Only on your first turn of a fight: a massive hit.", cost = 4, kind = "attack", qte = "rings", power = { 40, 48 }, hits = 1, element = "Pierce", target = "enemy", requires = "FirstTurn" },
+	Ambush = { id = "Ambush", label = "Ambush", menu = "Heavy", desc = "Only on your first turn of a fight: a massive hit.", cost = 3, kind = "attack", qte = "rings", power = { 40, 48 }, hits = 1, element = "Pierce", target = "enemy", requires = "FirstTurn" },
 	-- Tank (shields; the other hand can hold any weapon)
 	ShieldPunch = { id = "ShieldPunch", label = "Shield Punch", menu = "Attack", desc = "A shove with your shield. Costs nothing.", cost = 0, kind = "attack", qte = "strike", power = { 8, 11 }, hits = 1, element = "Blunt", target = "enemy" },
 	GuardStance = { id = "GuardStance", label = "Guard Stance", menu = "Skill", desc = "Get a Shield (25% of your health) and Taunt for 2 turns: enemies must attack you.", cost = 2, kind = "stance", target = "self", shield = 0.25, taunt = 2 },
