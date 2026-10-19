@@ -116,4 +116,4 @@ careful review of each step before committing. Put the word "ultracode" in every
 - Should Smelling Salts also revive a knocked-out friend? (now: only wakes stunned friends)
 - Heavy enemy attacks now STUN on 3+ hits so stun resist / Smelling Salts matter. OK?
 - New: once half the crew is Ready at the map table, a 60 s countdown starts and the ship sails without the rest. OK?
-- New: Smelling Salts, rerolls, etc. as above; Studio with API access off waits ~3 s on join (save retries), then says your save did not load. That is expected in Studio.
+- Note: in Studio with API access off, joining waits about 3 s (save retries), then says your save did not load. That is normal in Studio.
